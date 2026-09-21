@@ -1,6 +1,8 @@
 ﻿using NewLife.Cube;
+using NewLife.Cube.ArcoVue;
 using NewLife.Cube.Services;
 using NewLife.Cube.Swagger;
+using NewLife.Cube.Vue;
 using NewLife.Log;
 
 XTrace.UseConsole();
@@ -31,7 +33,8 @@ var app = builder.Build();
 // Configure the HTTP request pipeline.
 //if (app.Environment.IsDevelopment())
 {
-    app.UseCubeSwagger();
+    app.UseCubeSwagger("swagger");
+    app.UseCubeScalar("CubeDemo 接口文档");
 }
 
 app.UseCube(builder.Environment);
@@ -40,6 +43,10 @@ app.UseAuthorization();
 
 app.MapControllerRoute(name: "default", pattern: "{controller=Index}/{action=Index}/{id?}");
 app.MapControllers();
+
+// UseVue 必须在 MapControllers 之后，确保 API endpoint 优先匹配，SPA 回退兜底
+//app.UseVue(builder.Environment);
+// app.UseArcoVue(builder.Environment);
 
 app.RegisterService("CubeDemo", null, builder.Environment.EnvironmentName, "/cube/info");
 

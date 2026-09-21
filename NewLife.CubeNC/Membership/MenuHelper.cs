@@ -87,7 +87,7 @@ public static class MenuHelper
         // 遍历该程序集所有类型
         foreach (var type in controllerTypes)
         {
-            var name = type.Name.TrimEnd("Controller");
+            var name = type.Name.TrimSuffix("Controller");
             var url = root.Url + "/" + name;
             var node = root;
 
@@ -122,6 +122,15 @@ public static class MenuHelper
 
             ms.Add(controller);
             list.Add(controller);
+
+            // 注册实体类型到页面的映射，供外键跳转链接使用
+            var entityType = GetEntityType(type);
+            if (entityType != null)
+            {
+                var factory = EntityFactory.CreateFactory(entityType);
+                var pk = factory?.Unique?.Name ?? "ID";
+                EntityPageRegistry.Register(entityType, url, pk);
+            }
 
             // 获取动作
             var acts = ScanActionMenu(type, controller);
@@ -374,5 +383,24 @@ public static class MenuHelper
         }
 
         return _admins[key] = false;
+    }
+
+    /// <summary>从控制器类型的继承链中提取 ReadOnlyEntityController&lt;TEntity&gt; 的泛型实参</summary>
+    /// <param name="controllerType">控制器类型</param>
+    /// <returns>实体类型，非实体控制器返回 null</returns>
+    private static Type GetEntityType(Type controllerType)
+    {
+        var t = controllerType;
+        while (t != null && t != typeof(Object))
+        {
+            if (t.IsGenericType)
+            {
+                var name = t.GetGenericTypeDefinition().Name;
+                if (name.StartsWith("ReadOnlyEntityController`") || name.StartsWith("EntityController`"))
+                    return t.GetGenericArguments()[0];
+            }
+            t = t.BaseType;
+        }
+        return null;
     }
 }

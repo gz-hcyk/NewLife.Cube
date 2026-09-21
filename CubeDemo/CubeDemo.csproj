@@ -23,7 +23,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\NewLife.Cube.ArcoVue\NewLife.Cube.ArcoVue.csproj" />
     <ProjectReference Include="..\NewLife.Cube.Swagger\NewLife.Cube.Swagger.csproj" />
+    <ProjectReference Include="..\NewLife.Cube.Vue\NewLife.Cube.Vue.csproj" />
     <ProjectReference Include="..\NewLife.Cube\NewLife.Cube.csproj" />
   </ItemGroup>
 
@@ -32,7 +34,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NewLife.MySql" Version="1.0.2026.318-beta0335" />
+    <PackageReference Include="NewLife.MySql" Version="1.4.2026.801" />
   </ItemGroup>
 
 </Project>

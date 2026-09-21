@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc.Filters;
 using NewLife.Cube.Areas.Cube.Controllers;
 using NewLife.Cube.Entity;
 using NewLife.Cube.Services;
+using NewLife.Cube.Web;
 using NewLife.Data;
 using NewLife.Log;
 using NewLife.Reflection;
@@ -23,9 +24,10 @@ using HttpContext = Microsoft.AspNetCore.Http.HttpContext;
 namespace NewLife.Cube.Controllers;
 
 /// <summary>魔方前端数据接口</summary>
-/// <param name="fileStorage"></param>
-/// <param name="tokenService"></param>
-/// <param name="sources"></param>
+/// <param name="fileStorage">文件存储服务</param>
+/// <param name="tokenService">令牌服务</param>
+/// <param name="sources">端点数据源集合</param>
+/// <param name="setting">魔方设置</param>
 [DisplayName("数据接口")]
 public class CubeController(IFileStorage fileStorage, TokenService tokenService, IEnumerable<EndpointDataSource> sources, CubeSetting setting) : ControllerBaseX
 {
@@ -107,7 +109,31 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
             {
                 var set = CubeSetting.Current;
                 var (app, ex) = tokenService.TryDecodeToken(token, set.JwtSecret);
-                if (app != null && app.Enable && ex != null) logined = true;
+                // 验签通过（ex == null）且应用有效才放行；验签失败时 ex 非空绝不能放行，防止伪造 JWT 认证绕过
+                if (app != null && app.Enable && ex == null) logined = true;
+            }
+
+            // 回退到 UserToken 验证，并校验 Url 防止水平越权
+            if (!logined)
+            {
+                var ut = UserToken.FindByToken(token);
+                if (ut != null && ut.Enable && ut.Expire > DateTime.Now)
+                {
+                    var utUrl = ut.Url + "";
+                    // attachment: 前缀令牌仅限附件访问（由 CheckAttachmentAccess 处理），此处不放行
+                    if (!utUrl.StartsWithIgnoreCase("attachment:"))
+                    {
+                        // 令牌未锁定 Url → 全局有效；锁定了 Url → 必须与当前请求路径匹配
+                        if (utUrl.IsNullOrEmpty())
+                            logined = true;
+                        else
+                        {
+                            var tokenPath = utUrl.Split('?')[0];
+                            var reqPath = HttpContext.Request.Path.Value + "";
+                            if (reqPath.EqualIgnoreCase(tokenPath)) logined = true;
+                        }
+                    }
+                }
             }
         }
 
@@ -121,7 +147,7 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
     {
         var request = httpContext.Request;
         var token = request.Query["Token"] + "";
-        if (token.IsNullOrEmpty()) token = (request.Headers["Authorization"] + "").TrimStart("Bearer ");
+        if (token.IsNullOrEmpty()) token = (request.Headers["Authorization"] + "").TrimPrefix("Bearer ");
         if (token.IsNullOrEmpty()) token = request.Headers["X-Token"] + "";
         if (token.IsNullOrEmpty()) token = request.Cookies["Token"] + "";
 
@@ -370,7 +396,7 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
     #endregion
 
     #region 头像
-    /// <summary>获取用户头像</summary>
+    /// <summary>获取用户头像。头像文件不存在时根据昵称和性别自动生成 SVG 文字头像</summary>
     /// <param name="id">用户编号</param>
     /// <returns></returns>
     public virtual ActionResult Avatar(Int32 id)
@@ -384,21 +410,32 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
         var av = "";
         if (!user.Avatar.IsNullOrEmpty() && !user.Avatar.StartsWith("/"))
         {
-            av = set.AvatarPath.CombinePath(user.Avatar).GetBasePath();
-            if (!System.IO.File.Exists(av)) av = null;
+            // 防路径穿越：仅接受纯文件名（无路径分隔符），外部回填头像地址可能含 .. 或子路径
+            var name = Path.GetFileName(user.Avatar);
+            if (!name.IsNullOrEmpty() && name == user.Avatar)
+            {
+                av = set.AvatarPath.CombinePath(name).GetBasePath();
+                if (!System.IO.File.Exists(av)) av = null;
+            }
         }
 
-        // 用于兼容旧代码
+        // 用于兼容旧代码：按扩展名优先级查找（.png/.svg/.jpg/.gif/.webp）
         if (av.IsNullOrEmpty() && !set.AvatarPath.IsNullOrEmpty())
         {
-            av = set.AvatarPath.CombinePath(user.ID + ".png").GetBasePath();
-            if (!System.IO.File.Exists(av)) av = null;
+            var (found, _) = SvgAvatarService.FindAvatarFile(set.AvatarPath, user.ID);
+            av = found;
         }
 
-        if (!System.IO.File.Exists(av)) throw new Exception("用户头像不存在 " + id);
+        // 头像文件不存在时，根据昵称和性别生成 SVG 文字头像
+        if (av.IsNullOrEmpty() || !System.IO.File.Exists(av))
+        {
+            var svg = SvgAvatarService.Generate(user, set.AvatarChars);
+            return Content(svg, "image/svg+xml");
+        }
 
         var vs = System.IO.File.ReadAllBytes(av);
-        return File(vs, "image/png");
+        var ct = SvgAvatarService.GetContentType(Path.GetExtension(av));
+        return File(vs, ct);
     }
     #endregion
 
@@ -431,6 +468,11 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
         if (!category.EqualIgnoreCase("LayoutSetting"))
             return Json(203, "非授权操作，不允许保存系统布局以外的信息");
 
+        // 防水平越权：仅允许保存当前登录用户自己的布局；系统管理员可代用户设置
+        var cur = ManageProvider.User;
+        if (cur == null || userid != cur.ID && !cur.Roles.Any(e => e.IsSystem))
+            return Json(403, "仅能保存自己的布局设置");
+
         var para = Parameter.GetOrAdd(userid, category, name);
         para.SetItem("Value", value);
         para.Save();
@@ -460,13 +502,21 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
         var denied = CheckAttachmentAccess(att);
         if (denied != null) return denied;
 
+        // 云存储附件：直接返回预签名Url
+        if (!att.IsLocalStorage())
+        {
+            var url = AttachmentProvider.Provider.GetUrl(att.FilePath);
+            if (url.IsNullOrEmpty()) return NotFound("找不到附件文件");
+            return Redirect(url);
+        }
+
         // 如果附件不存在，则抓取
         var filePath = att.GetFilePath();
         if (!filePath.IsNullOrEmpty() && !System.IO.File.Exists(filePath) && setting.FileStorageFetch)
         {
             // 如果本地文件不存在，则从分布式文件存储获取
             await fileStorage.RequestFileAsync(att.Id, att.FilePath, "file not found");
-            await Task.Delay(5_000);
+            await Task.Delay(setting.FileStorageFetchTimeout);
         }
         if (filePath.IsNullOrEmpty() || !System.IO.File.Exists(filePath))
         {
@@ -509,13 +559,21 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
         var denied = CheckAttachmentAccess(att);
         if (denied != null) return denied;
 
+        // 云存储附件：直接返回预签名Url
+        if (!att.IsLocalStorage())
+        {
+            var url = AttachmentProvider.Provider.GetUrl(att.FilePath);
+            if (url.IsNullOrEmpty()) return NotFound("找不到附件文件");
+            return Redirect(url);
+        }
+
         // 如果附件不存在，则抓取
         var filePath = att.GetFilePath();
         if (!filePath.IsNullOrEmpty() && !System.IO.File.Exists(filePath) && setting.FileStorageFetch)
         {
             // 如果本地文件不存在，则从分布式文件存储获取
             await fileStorage.RequestFileAsync(att.Id, att.FilePath, "file not found");
-            await Task.Delay(5_000);
+            await Task.Delay(setting.FileStorageFetchTimeout);
         }
         if (filePath.IsNullOrEmpty() || !System.IO.File.Exists(filePath))
         {
@@ -543,6 +601,7 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
 
         return result;
     }
+
     #endregion
 
     #region 权限辅助
@@ -563,6 +622,29 @@ public class CubeController(IFileStorage fileStorage, TokenService tokenService,
         {
             var publicCats = set.PublicAttachmentCategories.Split(',');
             if (publicCats.Any(c => c.Trim().EqualIgnoreCase(category))) return null;
+        }
+
+        // 检查分享令牌：未登录时凭有效 UserToken 也可访问该附件
+        var shareToken = GetToken(HttpContext);
+        if (!shareToken.IsNullOrEmpty())
+        {
+            var ut = UserToken.FindByToken(shareToken);
+            if (ut != null && ut.Enable && ut.Expire > DateTime.Now && ut.Url.EqualIgnoreCase($"attachment:{att.Id}"))
+            {
+                // 更新使用统计
+                var ip = HttpContext.GetUserHost() + "";
+                ut.Times++;
+                if (ut.FirstTime.Year < 2000)
+                {
+                    ut.FirstIP = ip;
+                    ut.FirstTime = DateTime.Now;
+                }
+                ut.LastIP = ip;
+                ut.LastTime = DateTime.Now;
+                ut.SaveAsync(5_000);
+
+                return null;
+            }
         }
 
         // 其余分类需要登录

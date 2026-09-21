@@ -12,10 +12,12 @@ using Microsoft.Net.Http.Headers;
 using NewLife.Caching;
 using NewLife.Common;
 using NewLife.Configuration;
+using NewLife.Cube.AI;
 using NewLife.Cube.Extensions;
 using NewLife.Cube.Modules;
 using NewLife.Cube.Services;
 using NewLife.Cube.WebMiddleware;
+using NewLife.Cube.Widgets;
 using NewLife.IP;
 using NewLife.Log;
 using NewLife.Reflection;
@@ -99,6 +101,9 @@ public static class CubeService
         var set = CubeSetting.Current;
         services.AddSingleton(set);
 
+        // 租户上下文。封装静态 AsyncLocal 的无状态门面，注册为 Singleton 以避免被 Singleton 服务（如 UserService）捕获 scoped 依赖；租户状态本身由 AsyncLocal 按请求隔离
+        services.AddSingleton<ITenantContext, TenantContextService>();
+
         // 配置跨域处理，允许所有来源
         // CORS，全称 Cross-Origin Resource Sharing （跨域资源共享），是一种允许当前域的资源能被其他域访问的机制
         if (set.CorsOrigins == "*")
@@ -174,12 +179,25 @@ public static class CubeService
 
         // 服务
         services.AddSingleton<UIService>();
+        services.AddSingleton<WidgetManager>();
         services.AddSingleton<PasswordService>();
         services.AddSingleton<UserService>();
+        services.AddSingleton<SecurityEventService>();
+        services.AddSingleton<BlockService>();
+        services.AddHostedService(sp => sp.GetRequiredService<BlockService>());
         services.AddSingleton<AccessService>();
         services.AddSingleton<TokenService>();
-        services.AddSingleton<SmsService>();
-        services.AddSingleton<MailService>();
+        services.TryAddSingleton<IMfaService, TotpMfaService>();
+
+        // 账号注销处理器：默认处理器清理框架侧个人数据；下游可继续追加注册（必须 Singleton）
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IAccountCloseHandler, DefaultAccountCloseHandler>());
+
+        // SSO 服务
+        services.AddSingleton<Services.Sso.IOAuthAppService, Services.Sso.OAuthAppService>();
+        services.AddSingleton<Services.Sso.ITokenService, Services.Sso.TokenService>();
+        services.AddSingleton<Services.Sso.IUserBindingService, Services.Sso.UserBindingService>();
+        services.AddSingleton<Services.Sso.ISsoClientService, Services.Sso.SsoClientService>();
+        services.AddSingleton<Services.Sso.ISsoServerService, Services.Sso.SsoServerService>();
 
         //services.AddHostedService<JobService>();
         services.AddHostedService<DataRetentionService>();
@@ -187,8 +205,14 @@ public static class CubeService
         // 添加定时作业
         services.AddCubeJob();
 
+        // 注册 AI 服务
+        services.AddCubeAI();
+
         // 注册文件存储服务
         services.AddCubeFileStorage();
+
+        // 注册附件存储提供者。根据配置切换本地磁盘与对象存储（OSS/COS/七牛）
+        services.AddCubeAttachmentStorage(set);
 
         // 注册IP地址库
         IpResolver.Register();
@@ -393,6 +417,11 @@ public static class CubeService
         // 配置静态Http上下文访问器
         app.UseStaticHttpContext();
 
+        // API 前缀重写：配置了前缀的请求自动去掉前缀，转发到真实路由
+        // 必须放在静态文件/鉴权/路由之前，保证后续管道看到的是去前缀后的路径
+        if (!set.ApiPrefixes.IsNullOrWhiteSpace())
+            app.UseApiPrefixRewrite();
+
         // 注册中间件
         //app.UseStaticFiles();
         app.UseCookiePolicy();
@@ -512,7 +541,7 @@ public static class CubeService
             var root = av.FullName.EnsureEnd(Path.DirectorySeparatorChar.ToString());
             foreach (var item in av.GetAllFiles(null, true))
             {
-                var name = item.FullName.TrimStart(root);
+                var name = item.FullName.TrimPrefix(root);
                 var dfile = dst.FullName.CombinePath(name);
                 if (!File.Exists(dfile))
                 {

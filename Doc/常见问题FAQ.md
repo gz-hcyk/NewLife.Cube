@@ -139,7 +139,7 @@ app.UseCube();
 ```javascript
 // 登录
 const login = async (username, password) => {
-    const response = await fetch('/Admin/User/Login', {
+    const response = await fetch('/Auth/Login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
@@ -238,7 +238,7 @@ OAuthClient.Register("MyProvider", () => new MyOAuthClient());
 
 ### 解答
 
-参考 [多租户架构](多租户架构.md) 章节，关键步骤：
+参考 [多租户架构](PERM-多租户架构.md) 章节，关键步骤：
 
 #### 1. 实体添加租户字段
 

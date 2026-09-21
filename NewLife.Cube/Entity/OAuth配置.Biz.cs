@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using NewLife.Cube.Web.Models;
 using NewLife.Data;
 using NewLife.Log;
@@ -34,7 +34,7 @@ public enum GrantTypes
 }
 
 /// <summary>OAuth配置。需要连接的OAuth认证方</summary>
-public partial class OAuthConfig : Entity<OAuthConfig>, ITenantSource
+public partial class OAuthConfig : Entity<OAuthConfig>, ITenantScope
 {
     #region 对象操作
     static OAuthConfig()
@@ -195,18 +195,18 @@ public partial class OAuthConfig : Entity<OAuthConfig>, ITenantSource
         return Find(_.Name == name);
     }
 
-    /// <summary>根据AppId查找</summary>
+    /// <summary>根据AppId查找。仅返回启用且未删除的配置，防止禁用/软删除配置继续生效</summary>
     /// <param name="appid">AppId</param>
     /// <returns>实体对象</returns>
     public static OAuthConfig FindByAppId(String appid)
     {
         // 实体缓存
-        if (Meta.Session.Count < 1000) return Meta.Cache.Find(e => e.AppId.EqualIgnoreCase(appid));
+        if (Meta.Session.Count < 1000) return Meta.Cache.Find(e => e.AppId.EqualIgnoreCase(appid) && e.Enable && !e.IsDeleted);
 
         // 单对象缓存
         //return Meta.SingleCache.GetItemWithSlaveKey(name) as OAuthConfig;
 
-        return Find(_.AppId == appid);
+        return Find(_.AppId == appid & _.Enable == true & _.IsDeleted == false);
     }
     #endregion
 

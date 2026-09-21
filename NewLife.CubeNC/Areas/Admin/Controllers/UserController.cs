@@ -12,6 +12,7 @@ using NewLife.Cube.Common;
 using NewLife.Cube.Entity;
 using NewLife.Cube.Models;
 using NewLife.Cube.Services;
+using NewLife.Cube.Services.Sso;
 using NewLife.Cube.ViewModels;
 using NewLife.Data;
 using NewLife.Log;
@@ -32,37 +33,19 @@ namespace NewLife.Cube.Areas.Admin.Controllers;
 [Menu(100, true, Icon = "fa-user", HelpUrl = "https://newlifex.com/cube/cube_security", Mode = MenuModes.Admin | MenuModes.Tenant)]
 public class UserController : EntityController<User, UserModel>
 {
-    #region 短信验证码缓存Key前缀常量
-    // 登录相关的缓存Key已移至UserService中统一管理
-
-    /// <summary>短信绑定手机IP发送限制缓存前缀</summary>
-    private const String SmsBindIpPrefix = "SmsBind:IP:";
-    /// <summary>短信绑定手机最后发送时间缓存前缀</summary>
-    private const String SmsBindLastSendPrefix = "SmsBind:LastSend:";
-    /// <summary>短信绑定手机验证码缓存前缀</summary>
-    private const String SmsBindCodePrefix = "SmsBind:Code:";
-
-    /// <summary>短信重置密码IP发送限制缓存前缀</summary>
-    private const String SmsResetIpPrefix = "SmsReset:IP:";
-    /// <summary>短信重置密码最后发送时间缓存前缀</summary>
-    private const String SmsResetLastSendPrefix = "SmsReset:LastSend:";
-    /// <summary>短信重置密码验证码缓存前缀</summary>
-    private const String SmsResetCodePrefix = "SmsReset:Code:";
-    #endregion
-
     /// <summary>用于防爆破登录。即使内存缓存，也有一定用处，最糟糕就是每分钟重试次数等于集群节点数的倍数</summary>
     private readonly ICache _cache;
     private readonly PasswordService _passwordService;
     private readonly UserService _userService;
     private readonly ITracer _tracer;
-    private readonly ISmsVerifyCode _smsVerifyCode;
+    private readonly ITenantContext _tenantContext;
 
     private Boolean _isMobile { get; set; } = false;
 
     static UserController()
     {
         ListFields.RemoveField("Avatar", "RoleIds", "Online", "Age", "Birthday", "LastLoginIP", "RegisterIP", "RegisterTime");
-        ListFields.RemoveField("Phone", "Code", "Question", "Answer");
+        ListFields.RemoveField("Phone", "Code", "Question", "Answer", "MailVerified", "MobileVerified");
         ListFields.RemoveField("MailVerified", "MobileVerified");
         ListFields.RemoveField("Ex1", "Ex2", "Ex3", "Ex4", "Ex5", "Ex6");
         ListFields.RemoveUpdateField();
@@ -73,7 +56,7 @@ public class UserController : EntityController<User, UserModel>
             df.Header = "";
             //df.Text = "<img src=\"{Avatar}\" style=\"width:64px;height:64px;\" />";
             //df.Url = "/Admin/User/Edit?id={ID}";
-            df.DataVisible = entity => !(entity as User).Avatar.IsNullOrEmpty();
+            // 始终显示头像列：无头像文件时由 MyAvatar 回退到 /Cube/Avatar 端点兜底生成 SVG 文字头像
             // 使用ILinkExtend，高度定制头像超链接
             df.AddService(new MyAvatar());
             df.Title = "{Remark}";
@@ -132,7 +115,9 @@ public class UserController : EntityController<User, UserModel>
         public String Resolve(DataField field, IModel data)
         {
             var user = data as User;
-            return $"<a href=\"/Admin/User/Edit?id={user.ID}\" target=\"_blank\"><img src=\"{user.GetAvatarUrl()}\" style=\"width:64px;height:64px;\" /></a>";
+            // 本地有头像文件 → GetAvatarUrl 返回可访问地址；否则回退到 /Cube/Avatar 端点，由服务端兜底生成 SVG 文字头像
+            var src = user.GetAvatarUrl() ?? $"/Cube/Avatar?id={user.ID}";
+            return $"<a href=\"/Admin/User/Edit?id={user.ID}\" target=\"_blank\"><img src=\"{src}\" style=\"width:32px;height:32px;\" /></a>";
         }
     }
 
@@ -158,14 +143,14 @@ public class UserController : EntityController<User, UserModel>
     /// <param name="cacheProvider"></param>
     /// <param name="userService"></param>
     /// <param name="tracer"></param>
-    /// <param name="smsVerifyCode"></param>
-    public UserController(PasswordService passwordService, ICacheProvider cacheProvider, UserService userService, ITracer tracer, ISmsVerifyCode smsVerifyCode = null)
+    /// <param name="tenantContext">租户上下文</param>
+    public UserController(PasswordService passwordService, ICacheProvider cacheProvider, UserService userService, ITracer tracer, ITenantContext tenantContext)
     {
         _passwordService = passwordService;
         _cache = cacheProvider.Cache;
         _userService = userService;
         _tracer = tracer;
-        _smsVerifyCode = smsVerifyCode;
+        _tenantContext = tenantContext;
     }
 
     /// <summary>搜索数据集</summary>
@@ -178,8 +163,12 @@ public class UserController : EntityController<User, UserModel>
         {
             var list = new List<User>();
             var entity = FindByID(id);
-            entity.Password = null;
-            if (entity != null) list.Add(entity);
+            if (entity != null)
+            {
+                // 不向浏览器输出密码
+                entity.Password = null;
+                list.Add(entity);
+            }
             return list;
         }
 
@@ -219,7 +208,7 @@ public class UserController : EntityController<User, UserModel>
 
         // 只读取租户相关的用户
         //var tencentId = ManagerProviderHelper.GetTenantId(HttpContext);
-        var tencentId = TenantContext.CurrentId;
+        var tencentId = _tenantContext.TenantId;
         if (tencentId > 0)
         {
             list2 = XCode.Membership.User.SearchWithTenant(tencentId, roleIds, departmentIds, areaIds, enable, start, end, key, p);
@@ -237,6 +226,25 @@ public class UserController : EntityController<User, UserModel>
         return list2;
     }
 
+    /// <summary>当前登录用户是否为系统角色。非系统角色在用户页只读，资料编辑走用户中心</summary>
+    /// <returns></returns>
+    private static Boolean IsSystemRole()
+    {
+        var user = ManageProvider.User;
+        return user != null && user.Roles.Any(e => e.IsSystem);
+    }
+
+    /// <summary>表单，添加/修改</summary>
+    /// <param name="id">主键。可能为空（表示添加），所以用字符串而不是整数</param>
+    /// <returns></returns>
+    public override ActionResult Edit(String id)
+    {
+        // 用户页对非系统角色只读：管理表单不可进入，资料编辑统一走用户中心（基本信息页）
+        if (!IsSystemRole()) return RedirectToAction(nameof(Info));
+
+        return base.Edit(id);
+    }
+
     /// <summary>验证实体对象</summary>
     /// <param name="entity"></param>
     /// <param name="type"></param>
@@ -251,18 +259,11 @@ public class UserController : EntityController<User, UserModel>
             entity["Password"] = null;
         }
 
-        if (post)
+        if (post && !IsSystemRole())
         {
-            // 非系统管理员，禁止修改任何人的角色
-            var user = ManageProvider.User;
-            if (TenantContext.CurrentId == 0)//非租户验证
-            {
-                if (!user.Roles.Any(e => e.IsSystem) && entity is IEntity entity2)
-                {
-                    if (entity2.Dirtys["RoleID"]) throw new Exception("禁止修改角色！");
-                    if (entity2.Dirtys["RoleIds"]) throw new Exception("禁止修改角色！");
-                }
-            }
+            // 用户页对非系统角色只读：仅支持查看本人信息，角色/部门/启用等管理字段一律禁止写入
+            // （含租户上下文；租户成员角色分配走 TenantUserController，个人资料编辑走用户中心）
+            throw new Exception("用户页对非系统角色只读，资料编辑请前往用户中心！");
         }
 
         if (post && type == DataObjectMethodType.Update)
@@ -280,6 +281,19 @@ public class UserController : EntityController<User, UserModel>
         }
 
         return base.Valid(entity, type, post);
+    }
+
+    /// <summary>导入数据。批量导入绕过 Valid 直接批量写入，同样禁止非系统角色使用</summary>
+    /// <param name="factory">实体工厂</param>
+    /// <param name="list">新数据列表</param>
+    /// <param name="context">导入上下文</param>
+    /// <returns></returns>
+    protected override Int32 OnImport(IEntityFactory factory, IList<IEntity> list, ImportContext context)
+    {
+        // 用户页对非系统角色只读：批量导入属于写入旁路，一并禁止
+        if (!IsSystemRole()) throw new Exception("用户页对非系统角色只读，禁止批量导入！");
+
+        return base.OnImport(factory, list, context);
     }
 
     #region 登录注销
@@ -304,17 +318,18 @@ public class UserController : EntityController<User, UserModel>
         var logId = Session["Cube_OAuthId"].ToLong();
 
         // 如果禁用本地登录，且只有一个第三方登录，直接跳转，构成单点登录
-        var tenantId = TenantContext.CurrentId;
+        var tenantId = _tenantContext.TenantId;
         var ms = OAuthConfig.GetValids(tenantId, GrantTypes.AuthorizationCode);
         var set = CubeSetting.Current;
         if (ms != null && !set.AllowLogin)
         {
             if (logId > 0) throw new Exception("已完成第三方登录，但无法绑定本地用户且没有开启自动注册，建议开启OAuth应用的自动注册");
-            if (ms.Count == 0)
-            {
-                //throw new Exception("禁用了本地密码登录，且没有配置第三方登录");
-                set.AllowLogin = true;
-            }
+
+            // 没有任何第三方登录渠道，且短信/邮箱登录也未开启时明确报错；
+            // 不得静默重开密码登录（旧实现 set.AllowLogin=true 仅影响页面展示，服务层已强制拦截账密登录，
+            // 两者叠加会陷入"页面有表单却登录不了"的困惑状态）
+            if (ms.Count == 0 && !set.EnableSms && !set.EnableMail)
+                throw new Exception("已禁止密码登录，且未配置第三方登录渠道，请先在OAuth应用中启用SSO登录");
 
             // 只有一个，跳转
             if (ms.Count == 1)
@@ -354,7 +369,7 @@ public class UserController : EntityController<User, UserModel>
 
         var key = DateTime.Now.Ticks.ToString();
         var dicKey = _cache.GetOrAdd(key, k => NCreateKeyPair(), 300);
-        ViewData["pKey"] = new KeyValuePair<String, String>(key, dicKey.Item1);
+        ViewData["ChallengeKey"] = new KeyValuePair<String, String>(key, dicKey.Item1);
 
         return _isMobile ? View("MLogin", model) : View(model);
     }
@@ -369,7 +384,12 @@ public class UserController : EntityController<User, UserModel>
 
             AllowLogin = set.AllowLogin,
             AllowRegister = set.AllowRegister,
+            EnableSms = set.EnableSms,
+            EnableMail = set.EnableMail,
             //AutoRegister = set.AutoRegister,
+
+            EnablePasswordComplexity = set.EnablePasswordComplexity,
+            PasswordStrength = set.PaswordStrength,
 
             LoginTip = set.LoginTip,
             ResourceUrl = set.ResourceUrl,
@@ -428,7 +448,8 @@ public class UserController : EntityController<User, UserModel>
                     if (logId > 0)
                     {
                         Session["Cube_OAuthId"] = null;
-                        var log = NewLife.Cube.Controllers.SsoController.Provider.BindAfterLogin(logId);
+                        var bindingService = HttpContext.RequestServices.GetRequiredService<IUserBindingService>();
+                        var log = bindingService.BindAfterLogin(logId);
                         if (log != null && log.Success && !log.RedirectUri.IsNullOrEmpty()) return Redirect(log.RedirectUri);
                     }
 
@@ -448,20 +469,22 @@ public class UserController : EntityController<User, UserModel>
 
         var dkey = DateTime.Now.Ticks.ToString();
         var dicKey = _cache.GetOrAdd(dkey, k => NCreateKeyPair(), 300);
-        ViewData["pKey"] = new KeyValuePair<String, String>(dkey, dicKey.Item1);
+        ViewData["ChallengeKey"] = new KeyValuePair<String, String>(dkey, dicKey.Item1);
 
         var model = GetViewModel(returnUrl);
         model.LoginTip = result?.Message;
-        model.OAuthItems = OAuthConfig.GetVisibles(TenantContext.CurrentId);
+        model.OAuthItems = OAuthConfig.GetVisibles(_tenantContext.TenantId);
 
         return _isMobile ? View("MLogin", model) : View(model);
     }
 
     /// <summary>获取登录密钥</summary>
-    /// <returns>返回pKey和publicKey</returns>
+    /// <remarks>对齐 WebAPI 版 GET /Auth/Challenge：返回新鲜的 challengeId 和 RSA 公钥。
+    /// 公钥为公开信息，无需鉴权；前端应在提交登录前动态获取，避免页面停留过久导致密钥过期。</remarks>
+    /// <returns>返回 challengeId 和 publicKey</returns>
     [AllowAnonymous]
     [HttpGet]
-    public ActionResult GetLoginKey(String token)
+    public ActionResult GetLoginKey()
     {
         if (ManageProvider.User != null)
         {
@@ -469,16 +492,6 @@ public class UserController : EntityController<User, UserModel>
             {
                 code = 500,
                 message = "已登录，无需获取密钥"
-            });
-        }
-        var validToken = "5tU3Xr6PkF6AHfdCu7Sr";
-
-        if (token != validToken)
-        {
-            return Json(new
-            {
-                code = 500,
-                message = "非法请求，token错误"
             });
         }
         try
@@ -492,7 +505,7 @@ public class UserController : EntityController<User, UserModel>
                 message = "ok",
                 data = new
                 {
-                    pKey = key,
+                    challengeId = key,
                     publicKey = dicKey.Item1
                 }
             });
@@ -544,184 +557,86 @@ public class UserController : EntityController<User, UserModel>
     }
     #endregion
 
-    #region 验证码登录
-    /// <summary>发送登录短信验证码</summary>
-    /// <param name="model"></param>
-    /// <returns></returns>
-    [HttpPost]
-    [AllowAnonymous]
-    public async Task<ActionResult> SendVerifyCode(VerifyCodeModel model)
-    {
-        var ip = UserHost;
-        try
-        {
-            var result = await _userService.SendVerifyCode(model, ip);
-
-            return Json(0, "验证码已发送");
-        }
-        catch (Exception ex)
-        {
-            return Json(500, "发送失败：" + ex.Message);
-        }
-    }
-
-    /// <summary>短信验证码登录</summary>
-    /// <param name="mobile">手机号</param>
-    /// <param name="code">验证码</param>
-    /// <param name="remember">记住登录</param>
-    /// <returns></returns>
-    [HttpPost]
-    [AllowAnonymous]
-    [Obsolete($"=>{nameof(Login)}")]
-    public ActionResult SmsLogin(String mobile, String code, Boolean remember = false)
-    {
-        // 构造登录模型，设置登录类型为手机验证码登录
-        var loginModel = new LoginModel
-        {
-            Username = mobile,
-            Password = code,
-            Remember = remember,
-        };
-
-        return Login(loginModel);
-    }
-    #endregion
-
-    #region 绑定手机号  
-    /// <summary>绑定手机号到当前登录用户</summary>
-    /// <param name="mobile">手机号</param>
-    /// <param name="code">验证码</param>
+    #region 账号管理
+    /// <summary>注销账号（依据《个人信息保护法》提供账号注销功能）。禁用账号并清空个性化数据，吊销令牌、解绑三方</summary>
     /// <returns></returns>
     [HttpPost]
     [EntityAuthorize]
-    public ActionResult BindByVerifyCode(String mobile, String code)
+    public ActionResult CloseAccount()
     {
-        mobile = mobile?.Trim() ?? "";
-        code = code?.Trim() ?? "";
+        var user = ManageProvider.User as User;
+        if (user == null || user.ID <= 0) return Json(500, "用户未登录，请先登录");
 
-        // 1. 验证手机号格式
-        if (mobile.IsNullOrEmpty()) return Json(500, "手机号不能为空");
-        if (!ValidFormatHelper.IsMobile(mobile)) return Json(500, "手机号格式不正确");
+        var result = _userService.CloseAccount(user, UserHost);
+        if (!result.IsSuccess) return Json(500, result.Message);
 
-        // 2. 验证验证码不能为空
-        if (code.IsNullOrEmpty()) return Json(500, "验证码不能为空");
+        // 注销当前会话
+        ManageProvider.Provider.Logout();
 
-        // 3. 检查当前用户是否已登录
-        var currentUser = ManageProvider.User as User;
-        if (currentUser == null || currentUser.ID <= 0) return Json(500, "用户未登录，请先登录");
-
-        // 4. 检查短信服务是否启用
-        var set = CubeSetting.Current;
-        if (!set.EnableSms) return Json(500, "短信验证码功能未启用");
-
-        var ip = UserHost;
-
-        using var span = _tracer?.NewSpan(nameof(BindByVerifyCode), new { mobile, ip });
-
-        // 5. 验证验证码
-        var codeKey = $"{SmsBindCodePrefix}{mobile}";
-        var cachedCode = _cache.Get<String>(codeKey);
-
-        if (cachedCode.IsNullOrEmpty()) return Json(500, "验证码已过期或不存在，请重新获取");
-        if (!cachedCode.EqualIgnoreCase(code)) return Json(500, "验证码错误");
-
-        // 6. 检查手机号是否已被其他用户绑定
-        var existingUser = XCode.Membership.User.FindByMobile(mobile);
-        if (existingUser != null && existingUser.ID > 0 && existingUser.ID != currentUser.ID)
-            return Json(500, "该手机号已被其他账户绑定");
-
-        // 7. 绑定手机号到当前用户
-        var user = XCode.Membership.User.FindByID(currentUser.ID);
-        if (user == null) return Json(500, "用户不存在");
-
-        if (user.Mobile != mobile) // 手机号不相同才更新
-        {
-            user.Mobile = mobile;
-            user.MobileVerified = true;
-            var updated = user.Update();
-            if (updated <= 0) return Json(500, "绑定失败，请重试");
-        }
-
-        // 8. 验证成功后删除缓存验证码，防止重复使用
-        _cache.Remove(codeKey);
-
-        LogProvider.Provider.WriteLog(typeof(User), "绑定手机", true, $"手机号：{mobile}", currentUser.ID, currentUser + "", ip);
-
-        return Json(0, "手机号绑定成功");
+        return Json(0, "账号已注销");
     }
-    #endregion
 
-    #region 手机验证码重置密码 
-
-    /// <summary>通过手机验证码重置密码</summary>
-    /// <param name="mobile">手机号</param>
-    /// <param name="code">验证码</param>
-    /// <param name="newPassword">新密码</param>
-    /// <param name="confirmPassword">确认密码</param>
+    /// <summary>导出个人数据（依据《个人信息保护法》提供数据可携带权）。下载 JSON 文件</summary>
     /// <returns></returns>
-    [HttpPost]
-    [AllowAnonymous]
-    public ActionResult ResetByVerifyCode(String mobile, String code, String newPassword, String confirmPassword)
+    [HttpGet]
+    [EntityAuthorize]
+    public ActionResult ExportData()
     {
-        mobile = mobile?.Trim() ?? String.Empty;
-        code = code?.Trim() ?? String.Empty;
-        newPassword = newPassword?.Trim() ?? String.Empty;
-        confirmPassword = confirmPassword?.Trim() ?? String.Empty;
+        var cur = ManageProvider.User as XCode.Membership.User;
+        if (cur == null) return RedirectToAction("Login");
 
-        // 1. 验证手机号格式
-        if (mobile.IsNullOrEmpty())
-            return Json(500, "手机号不能为空");
-        if (!ValidFormatHelper.IsMobile(mobile))
-            return Json(500, "手机号格式不正确");
+        var user = XCode.Membership.User.FindByKeyForEdit(cur.ID);
+        if (user == null) throw new Exception("无效用户编号！");
 
-        // 2. 验证验证码不能为空
-        if (code.IsNullOrEmpty())
-            return Json(500, "验证码不能为空");
-
-        // 3. 验证新密码不能为空
-        if (newPassword.IsNullOrEmpty())
-            return Json(500, "新密码不能为空");
-
-        // 4. 验证确认密码
-        if (!confirmPassword.IsNullOrEmpty() && newPassword != confirmPassword)
-            return Json(500, "两次输入密码不一致");
-
-        // 5. 验证密码强度
-        if (!_passwordService.Valid(newPassword)) return Json(500, "密码太弱");
-
-        // 6. 检查短信服务是否启用
-        var set = CubeSetting.Current;
-        if (!set.EnableSms) return Json(500, "短信验证码功能未启用");
-
-        var ip = UserHost;
-
-        using var span = _tracer?.NewSpan(nameof(ResetByVerifyCode), new { mobile, ip });
-
-        // 7. 验证验证码
-        var codeKey = $"{SmsResetCodePrefix}{mobile}";
-        var cachedCode = _cache.Get<String>(codeKey);
-
-        if (cachedCode.IsNullOrEmpty()) return Json(500, "验证码已过期或不存在，请重新获取");
-        if (!cachedCode.EqualIgnoreCase(code)) return Json(500, "验证码错误");
-
-        // 8. 查找用户并更新密码
-        var user = XCode.Membership.User.FindByMobile(mobile);
-        if (user == null || user.ID <= 0) return Json(500, "该手机号未注册");
-
-        var newPassHash = ManageProvider.Provider?.PasswordProvider.Hash(newPassword);
-        if (user.Password != newPassHash)
+        var data = new Dictionary<String, Object>
         {
-            user.Password = newPassHash;
-            var updated = user.Update();
-            if (updated <= 0) return Json(500, "密码重置失败，请重试");
-        }
+            ["说明"] = "本文件为您的个人数据导出，依据《中华人民共和国个人信息保护法》第四十五条提供数据可携带权。",
+            ["导出时间"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+            ["个人资料"] = new
+            {
+                user.ID,
+                user.Name,
+                user.DisplayName,
+                user.Sex,
+                user.Mail,
+                user.MailVerified,
+                user.Mobile,
+                user.MobileVerified,
+                user.Code,
+                user.Avatar,
+                user.RoleID,
+                user.DepartmentID,
+                user.Enable,
+                user.Birthday,
+                user.Logins,
+                user.LastLogin,
+                user.LastLoginIP,
+                user.RegisterTime,
+                user.RegisterIP,
+            },
+            ["第三方绑定"] = UserConnect.FindAllByUserID(user.ID).Select(e => new
+            {
+                e.Provider,
+                e.OpenID,
+                e.NickName,
+                e.Enable,
+                e.CreateTime,
+                e.UpdateTime,
+            }),
+            ["令牌记录"] = UserToken.FindAllByUserID(user.ID).Select(e => new
+            {
+                Token = e.Token?.Length > 8 ? e.Token[..8] + "..." : e.Token,
+                e.Expire,
+                e.CreateTime,
+                e.CreateIP,
+            }),
+        };
 
-        // 9. 验证成功后删除缓存验证码，防止重复使用
-        _cache.Remove(codeKey);
+        var json = NewLife.Serialization.JsonHelper.ToJson(data, true);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var fileName = $"{user.Name}-个人数据-{DateTime.Now:yyyyMMdd}.json";
 
-        LogProvider.Provider.WriteLog(typeof(User), "重置密码", true, $"手机号：{mobile}", user.ID, user + "", ip);
-
-        return Json(0, "密码重置成功");
+        return File(bytes, "application/json; charset=utf-8", fileName);
     }
     #endregion
 
@@ -795,6 +710,9 @@ public class UserController : EntityController<User, UserModel>
             var att = await SaveFile(user, file, null, null);
             if (att != null) user.Avatar = ViewHelper.GetAttachmentUrl(att);
         }
+
+        // 资料编辑不走密码流程：清除 Password 脏标记，防止构造请求绕过密码哈希直接明文入库
+        (user as IEntity).Dirtys["Password"] = false;
 
         user.Update();
 
@@ -871,7 +789,7 @@ public class UserController : EntityController<User, UserModel>
 
         // 第三方绑定
         var ucs = UserConnect.FindAllByUserID(user.ID);
-        var ms = OAuthConfig.GetValids(TenantContext.CurrentId, GrantTypes.AuthorizationCode);
+        var ms = OAuthConfig.GetValids(_tenantContext.TenantId, GrantTypes.AuthorizationCode);
 
         var model = new BindsModel
         {
@@ -885,68 +803,46 @@ public class UserController : EntityController<User, UserModel>
         return View(model);
     }
 
-    /// <summary>注册</summary>
+    /// <summary>注册（统一认证：用户名密码/手机验证码/邮箱验证码）</summary>
     /// <returns></returns>
     [HttpPost]
     [AllowAnonymous]
-    public ActionResult Register(RegisterModel registerModel)
+    public ActionResult Register(AuthRegisterModel registerModel)
     {
-        var email = registerModel.Email;
-        var username = registerModel.Username;
-        var password = registerModel.Password;
-        var password2 = registerModel.Password2;
-
         var set = CubeSetting.Current;
         if (!set.AllowRegister) throw new Exception("禁止注册！");
 
-        var tenantId = TenantContext.CurrentId;
+        var returnUrl = GetRequest("r");
+        if (returnUrl.IsNullOrEmpty()) returnUrl = GetRequest("ReturnUrl");
+
         try
         {
-            //if (String.IsNullOrEmpty(email)) throw new ArgumentNullException("email", "邮箱地址不能为空！");
-            if (String.IsNullOrEmpty(username)) throw new ArgumentNullException("username", "用户名不能为空！");
-            if (String.IsNullOrEmpty(password)) throw new ArgumentNullException("password", "密码不能为空！");
-            if (String.IsNullOrEmpty(password2)) throw new ArgumentNullException("password2", "重复密码不能为空！");
-            if (password != password2) throw new ArgumentOutOfRangeException("password2", "两次密码必须一致！");
-
-            if (!_passwordService.Valid(password)) throw new ArgumentException($"密码太弱，要求8位起且包含数字大小写字母和符号", nameof(password));
-
-            // 不得使用OAuth前缀
-            foreach (var item in OAuthConfig.GetValids(tenantId))
+            // 复用统一认证服务：涵盖验证码校验、去重、租户绑定、登录 Cookie 写入（CompleteLogin）
+            var result = _userService.Register(registerModel, HttpContext);
+            if (result == null || !result.IsSuccess || result.Data == null)
             {
-                if (username.StartsWithIgnoreCase($"{item.Name}_"))
-                    throw new ArgumentException(nameof(username), $"禁止使用[{item.Name}_]前缀！");
+                var msg = result?.Message ?? "注册失败";
+                if (IsJsonRequest) return Json(500, msg);
+
+                throw new ArgumentException(msg, nameof(registerModel));
             }
 
-            // 去重判断
-            var user = FindByName(username);
-            if (user != null) throw new ArgumentException(nameof(username), $"用户[{username}]已存在！");
+            if (IsJsonRequest) return Json(0, "ok", new { Token = result.Data.AccessToken });
 
-            user = FindByMail(email);
-            if (user != null) throw new ArgumentException(nameof(email), $"邮箱[{email}]已存在！");
+            // 注册成功（已写入登录 Cookie），跳转
+            if (Url.IsLocalUrl(returnUrl)) return Redirect(returnUrl);
 
-            var r = Role.GetOrAdd(set.DefaultRole);
-            //user = new User()
-            //{
-            //    Name = username,
-            //    Password = password,
-            //    Mail = email,
-            //    RoleID = r.ID,
-            //    Enable = true
-            //};
-            //user.Register();
-            var user2 = ManageProvider.Provider.Register(username, password, r.ID, true);
-
-            // 注册成功
+            return RedirectToAction(nameof(Login));
         }
         catch (ArgumentException aex)
         {
             ModelState.AddModelError(aex.ParamName, aex.Message);
         }
 
-        var model = GetViewModel(null);
-        model.OAuthItems = OAuthConfig.GetVisibles(tenantId);
+        var model = GetViewModel(returnUrl);
+        model.OAuthItems = OAuthConfig.GetVisibles(_tenantContext.TenantId);
 
-        return View("Login", model);
+        return _isMobile ? View("MLogin", model) : View(model);
     }
 
     /// <summary>清空密码</summary>
@@ -959,11 +855,44 @@ public class UserController : EntityController<User, UserModel>
 
         // 前面表单可能已经清空密码
         var user = FindByID(id);
+        if (user == null)
+        {
+            if (IsJsonRequest) return Json(1, "用户不存在");
+            return RedirectToAction("Index");
+        }
+
         //user.Password = "nopass";
         user.Password = null;
         user.SaveWithoutValid();
 
         if (IsJsonRequest) return Ok();
+
+        return RedirectToAction("Edit", new { id });
+    }
+
+    /// <summary>吊销令牌。吊销指定用户的所有访问令牌，不依赖在线状态，适用于安全运维场景</summary>
+    /// <param name="id">用户编号</param>
+    /// <returns></returns>
+    [DisplayName("吊销令牌")]
+    [EntityAuthorize(PermissionFlags.Update)]
+    public ActionResult RevokeTokens(Int32 id)
+    {
+        // 吊销令牌属于安全运维操作，仅管理员可用（用户页对非系统角色只读，防跨用户令牌吊销）
+        if (!IsSystemRole()) throw new Exception("吊销令牌需要管理员权限，非法操作！");
+
+        var user = FindByID(id);
+        if (user == null)
+        {
+            if (IsJsonRequest) return Json(1, "用户不存在");
+            return RedirectToAction("Edit", new { id });
+        }
+
+        var count = UserToken.RevokeByUser(id);
+
+        LogProvider.Provider.WriteLog("用户", "吊销令牌", true,
+            $"吊销用户[{user.Name}]的{count}个令牌", id, user.Name);
+
+        if (IsJsonRequest) return Json(0, $"已吊销 {count} 个令牌");
 
         return RedirectToAction("Edit", new { id });
     }
@@ -987,7 +916,7 @@ public class UserController : EntityController<User, UserModel>
         //var tid = HttpContext.GetTenantId();
         //var t = Tenant.FindById(tid);
 
-        ViewData["TenantId"] = TenantContext.CurrentId;
+        ViewData["TenantId"] = _tenantContext.TenantId;
 
         return View(model);
     }
@@ -997,12 +926,13 @@ public class UserController : EntityController<User, UserModel>
     {
         var ef = base.OnInsert(entity);
 
-        if (TenantContext.CurrentId > 0)//默认插入当前租户下的用户
+        if (_tenantContext.TenantId > 0)//默认插入当前租户下的用户
         {
             var tu = new TenantUser
             {
-                TenantId = TenantContext.CurrentId,
+                TenantId = _tenantContext.TenantId,
                 UserId = entity.ID,
+                RoleId = ManagerProviderHelper.ResolveTenantRole(_tenantContext.TenantId, entity.RoleID),
                 CreateIP = entity.RegisterIP,
                 Enable = entity.Enable,
 
@@ -1057,7 +987,16 @@ public class UserController : EntityController<User, UserModel>
     {
         var tagTenantId = Request.Form["TagTenantId"].ToInt(-1);
 
-        if (tagTenantId > 0) HttpContext.SaveTenant(tagTenantId);
+        // 仅允许切换到当前用户所属的有效租户，防止越权写入任意租户Cookie
+        if (tagTenantId > 0)
+        {
+            var user = ManageProvider.User;
+            var tu = TenantUser.FindByTenantIdAndUserId(tagTenantId, user.ID);
+            if (tu == null || !tu.Enable)
+                throw new InvalidOperationException("无权切换到该租户！");
+
+            HttpContext.SaveTenant(tagTenantId);
+        }
 
         ViewBag.StatusMessage = "保存成功";
         if (IsJsonRequest) return Ok(ViewBag.StatusMessage);

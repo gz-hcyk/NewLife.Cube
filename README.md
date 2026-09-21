@@ -16,31 +16,50 @@ Swagger：[https://cube3.newlifex.com](https://cube3.newlifex.com)
 XCode教程：<https://newlifex.com/xcode>  
 核心库教程：<https://newlifex.com/core>  
 
+> **文档索引**：详细需求文档、功能清单、架构设计见 [`Doc/`](Doc/) 目录：
+> - 📋 [需求文档](Doc/需求文档.md) — 愿景、核心目标、功能需求
+> - ✅ [功能清单](Doc/功能清单.md) — 实现/测试/注释三维状态追踪
+> - 🏗️ [架构设计](Doc/架构设计.md) — 分层架构、模块设计、关键决策
+> - 🤖 [AI 人工智能](Doc/AI-人工智能.md) — AI 能力清单、配置与扩展点
+> - 🔔 [在线告警与站内信](Doc/ALM-在线告警与站内信.md) — 在线新高告警、系统级广播站内信与未读闭环
+> - � [邮箱/手机验证](Doc/AUTH-邮箱手机验证.md) — 账号激活契约（注册→激活→登录），前端皮肤接入规范
+> - 🛡️ [安全防御](Doc/PERM-安全防御.md) — 内置威胁检测、自动封禁与安全事件审计
+> - �📚 [魔方用户手册](Doc/魔方用户手册.md) — 完整的用户与开发手册
+
 ---
 ## 目录索引
-- [核心价值](#核心价值)
-- [总体架构](#总体架构)
-- [项目结构与子工程说明](#项目结构与子工程说明)
-- [核心概念](#核心概念)
-- [快速拥有](#快速拥有)
-- [最小示例（.NET 8/9 Minimal Hosting）](#最小示例net-89-minimal-hosting)
-- [字段与界面定制示例](#字段与界面定制示例)
-- [API 与前后端分离](#api-与前后端分离)
-- [权限与安全](#权限与安全)
-- [主题 / 皮肤 / UI 扩展](#主题--皮肤--ui-扩展)
-- [多数据库与大数据支持](#多数据库与大数据支持)
-- [性能特性](#性能特性)
-- [部署方式](#部署方式)
-- [SSO 用户中心快速部署](#快速部署用户中心)
-- [第三代魔方与路线图](#第三代魔方)
-- [常见使用场景](#常见使用场景)
-- [贡献指南](#贡献指南)
-- [FAQ 速览](#faq-速览)
-- [魔方特性](#魔方特性)
-- [ASP.NET Core 安装](#aspnet-core-安装)
-- [ASP.NET MVC 安装](#aspnet-mvc-安装)
-- [新生命项目矩阵](#新生命项目矩阵)
-- [新生命开发团队](#新生命开发团队)
+- [魔方 NewLife.Cube](#魔方-newlifecube)
+  - [目录索引](#目录索引)
+  - [核心价值](#核心价值)
+  - [总体架构](#总体架构)
+  - [项目结构与子工程说明](#项目结构与子工程说明)
+  - [核心概念](#核心概念)
+  - [快速拥有](#快速拥有)
+  - [最小示例（.NET 8/9 Minimal Hosting）](#最小示例net-89-minimal-hosting)
+  - [字段与界面定制示例](#字段与界面定制示例)
+  - [API 与前后端分离](#api-与前后端分离)
+  - [权限与安全](#权限与安全)
+  - [主题 / 皮肤 / UI 扩展](#主题--皮肤--ui-扩展)
+    - [新一代前端皮肤包](#新一代前端皮肤包)
+    - [前端 workspace 构建约定](#前端-workspace-构建约定)
+  - [多数据库与大数据支持](#多数据库与大数据支持)
+  - [性能特性](#性能特性)
+  - [部署方式](#部署方式)
+  - [快速部署用户中心](#快速部署用户中心)
+    - [快速部署用户中心](#快速部署用户中心-1)
+  - [第三代魔方](#第三代魔方)
+    - [项目参与须知](#项目参与须知)
+    - [目标蓝图](#目标蓝图)
+    - [春雨计划（里程碑摘录）](#春雨计划里程碑摘录)
+    - [WebApi 接口说明（节选）](#webapi-接口说明节选)
+  - [常见使用场景](#常见使用场景)
+  - [贡献指南](#贡献指南)
+  - [FAQ 速览](#faq-速览)
+  - [魔方特性](#魔方特性)
+  - [ASP.NET Core 安装](#aspnet-core-安装)
+  - [ASP.NET MVC 安装](#aspnet-mvc-安装)
+  - [新生命项目矩阵](#新生命项目矩阵)
+  - [新生命开发团队](#新生命开发团队)
 
 ---
 ## 核心价值
@@ -49,6 +68,13 @@ XCode教程：<https://newlifex.com/xcode>
 3. 多前端共存：Vue / Blazor / AntDesign / 传统 Razor 可渐进迁移。  
 4. 多数据库 + 自动建表 + 自动分表 + 读写分离（依赖 XCode）支持超大规模数据。  
 5. 可扩展：字段元数据、视图覆写、主题插件、IModule 模块化。  
+7. **AI 智能洞察**：任何数据页面一键 AI 分析——自动统计、异常检测、趋势预判、可执行建议。支持 SSE 流式输出和深度推理模式。MVC / Vue 双前端适配。  
+8. **AI 对话助手**：右下角对话面板统一入口，上下文感知（当前页面/实体/查询）。基于 NewLife.AI 工具层，对话即可完成数据分析、智能填表（元数据驱动通用填表）、记录分析与系统诊断，支持深度推理开关。  
+9. **工作台 Widget 部件体系**：工作台 / 首页由可配置部件（KPI、图表、监控）组成，支持个性化布局与 `/Cube/Widget` 部件管理。  
+10. **导出增强**：数据导出支持 xlsx 全量导出、Zip 打包、CSV 表头与枚举数字，并带 SYLK 防护。  
+11. **SVG 文字头像**：用户头像缺失时自动兜底生成 SVG 文字头像（中文取前 N 字 + 渐变视觉）。  
+12. **Scalar API 文档**：集成 Scalar 在线接口文档，配合 Swagger 按区域自动分组，接口在线调试更便捷。  
+13. **多租户开关**：多租户能力可一键开关，关闭后隐藏租户菜单与字段，支持运行时租户切换。  
 6. 长期演进 & 多目标框架，易升级、稳定可控。  
 
 ---
@@ -76,6 +102,7 @@ XCode教程：<https://newlifex.com/xcode>
 - NewLife.Cube：核心（实体控制器、权限、菜单、字段元数据、API）。
 - NewLife.CubeNC：旧版 MVC / Razor 兼容层。
 - 皮肤主题：AdminLTE / Metronic / Metronic8 / Tabler / LayuiAdmin / ElementUI / Blazor（各独立包）。
+- 新一代前端皮肤（pnpm workspace）：NaiveUI / MUI / Shadcn / ArcoVue / Angular / Vuetify / Svelte / TDesign。
 - NewLife.Cube.Swagger：按区域自动分组的 Swagger 文档。 
 - CubeDemo / CubeDemoNC：示例。  
 - CubeSSO：统一用户中心 & OAuth 服务端。  
@@ -90,6 +117,8 @@ XCode教程：<https://newlifex.com/xcode>
 - 权限模型：用户 -> 角色 -> 菜单(Action 集合)。首个用户抢管理员，`admin` 被禁用。  
 - ApiResponse：标准响应包装 code / data / page / stat。  
 - IModule：启动模块注入服务和静态资源（主题、Swagger 等）。  
+- **AI 对话助手**：全局 `AiController` 统一 `AiChat` 端点（`/Ai/AiChat`）+ NAI `AiChatService` 编排（会话历史 `ChatSessionService` 保持/工具循环/SSE 事件流）。实体控制器经 `IEntityAiContext` 能力接口向全局端点暴露数据查询/工具集/提示词重载点（保留子类重载 `SearchData`/`CreateCubeTools`/`BuildChatSystemPrompt`）。工具集含 `get_data_context`（数据上下文）/`get_form_schema`（编辑模式带已有值）/`fill_form`（智能填表）/`get_page_context`（页面上下文，`IPageDataContext` 服务端优先/浏览器采集兜底）/`get_system_info`（系统诊断）/`run_js`（页面脚本执行，SSE 下发 + 前端回传，检查点经事件总线广播支持分布式集群），均带中文描述供 LLM 决策。SSE 事件驱动前端填表与工具卡片展示，MVC 与 Vue 双端浮窗。
+- **AI 洞察（已合并）**：原 `AiInsight` 独立端点已合并到 AI 对话助手，数据收集保留 `AiInsightHelper`（14 类敏感字段黑名单）。
 
 ---
 ## 快速拥有
@@ -138,8 +167,8 @@ public class AppController : EntityController<App, AppModel>
 
 ---
 ## API 与前后端分离
-- 登录：`/Admin/User/Login` -> JWT Token（Header/Cookie/Query）。
-- 菜单：`/Admin/Index/GetMenuTree`。
+- 登录：`/Auth/Login` -> JWT Token（Header/Cookie/Query）。
+- 菜单：`/Cube/MenuTree`。
 - 字段：`/{Area}/{Controller}/GetFields?kind=1..4`。
 - 查询：主路由 + 动态参数（支持分页、排序、条件拼装）。
 - CRUD：`Detail` / `Insert` / `Update` / `Delete`。
@@ -150,7 +179,8 @@ public class AppController : EntityController<App, AppModel>
 - EntityAuthorize：登录 + 角色 + 菜单 Action 校验。  
 - 首个用户自动管理员，原 `admin` 禁用。  
 - 支持外部 OAuth / SSO / JWT，多端统一身份。  
-- 建议生产：关闭未用第三方登录、启用 HTTPS、加强密码策略。  
+- 建议生产：关闭未用第三方登录、启用 HTTPS、加强密码策略。
+- 安全防御：内置威胁检测（扫描器/注入/蜜罐）、持久化自动封禁（阶梯时长）与安全事件审计，默认自动模式（连续攻击自动封禁、大范围攻击临时拦截并自动回落），可配置或自动学习可信代理防伪造，可一键切换观察/拦截模式。  
 
 ---
 ## 主题 / 皮肤 / UI 扩展
@@ -158,6 +188,40 @@ public class AppController : EntityController<App, AppModel>
 - UIService 注册皮肤：`AddTheme/AddSkin`。  
 - 自定义：仿照 `MetronicModule` 实现 IModule 并在 Use 阶段挂载。  
 - 视图覆写：子项目同路径同名 `.cshtml` 覆盖父级。  
+
+### 新一代前端皮肤包
+基于 pnpm workspace + 公共模块 `@newlifex/api-core`（统一 API / Token / 类型）和 `@newlifex/field-mapping`（字段元数据 → 控件映射），8 套皮肤均开箱即用，NuGet 引包即得完整前端。
+
+### 前端 workspace 构建约定
+
+- 仓库根目录 `pnpm build`：仅构建 `packages/` 下公共模块，不再默认递归编译所有皮肤。
+- 仓库根目录单皮肤构建：使用 `pnpm build:vue`、`pnpm build:react`、`pnpm build:naive`、`pnpm build:mui`、`pnpm build:shadcn`、`pnpm build:arco`、`pnpm build:angular`、`pnpm build:vuetify`、`pnpm build:svelte`、`pnpm build:tdesign`。
+- 仓库根目录单皮肤开发：使用对应的 `pnpm dev:xxx`。
+- 需要一次性构建或启动全部前端时，显式使用 `pnpm build:all` 或 `pnpm dev:all`。
+- 若已进入具体皮肤目录 `web/`，继续使用该目录下的 `pnpm build` / `pnpm dev` 即可，互不干扰。
+
+| NuGet 包 | 框架 | UI 库 | 开发端口 |
+|---------|------|-------|---------|
+| `NewLife.Cube.NaiveUI` | Vue 3 | Naive UI | 5180 |
+| `NewLife.Cube.MUI` | React 19 | MUI 6 (Material) | 5181 |
+| `NewLife.Cube.Shadcn` | React 19 | Radix UI + Tailwind CSS 4 | 5182 |
+| `NewLife.Cube.ArcoVue` | Vue 3 | Arco Design Vue (字节) | 5183 |
+| `NewLife.Cube.Angular` | Angular 19 | NG-ZORRO (Ant Design) | 5184 |
+| `NewLife.Cube.Vuetify` | Vue 3 | Vuetify 3 (Material) | 5185 |
+| `NewLife.Cube.Svelte` | SvelteKit 2 + Svelte 5 | Tailwind CSS 4 | 5186 |
+| `NewLife.Cube.TDesign` | Vue 3 | TDesign (腾讯) | 5187 |
+
+```csharp
+// 使用示例（任选其一）
+app.UseNaiveUI(app.Environment);
+app.UseMUI(app.Environment);
+app.UseShadcn(app.Environment);
+app.UseArcoVue(app.Environment);
+app.UseAngular(app.Environment);
+app.UseVuetify(app.Environment);
+app.UseSvelte(app.Environment);
+app.UseTDesign(app.Environment);
+```
 
 ---
 ## 多数据库与大数据支持
@@ -233,7 +297,7 @@ Swagger：https://cube3.newlifex.com/swagger/index.html
 
 ### 目标蓝图
 1. 现代化 UI + 保留覆写机制。  
-2. 多框架前端：Vue/React/Angular/Blazor。  
+2. 多框架前端：Vue/React/Angular/Svelte + 8 套开箱即用皮肤包。  
 3. NuGet 引包即得默认皮肤。  
 4. 移动端 & 小程序 & 混合应用。  
 5. 数据大屏增强。  
@@ -253,9 +317,9 @@ https://github.com/NewLifeX/NewLife.CubeBlazor
 
 ### WebApi 接口说明（节选）
 1. 地址 https://cube3.newlifex.com/swagger/index.html  
-2. 登录 `/Admin/User/Login` 测试账号 `admin/admin` `test/test`  
+2. 登录 `/Auth/Login` 测试账号 `admin/admin` `test/test`  
 3. JWT：Header / Cookie / Query(token)  
-4. 菜单 `/Admin/Index/GetMenuTree`  
+4. 菜单 `/Cube/MenuTree`  
 5. 字段 `/{Area}/{Controller}/GetFields?kind=1` (`1=List 2=Detail 3=AddForm 4=EditForm`)  
 6. 列表：主路由 + 动态查询参数  
 7. `page`：分页信息  
@@ -297,6 +361,7 @@ A: 依靠字段元数据 + 标准 CRUD/JWT 登录。
 * 多数据库，支持 `MySql / SQLite / Sql Server / Oracle / PostgreSql / SqlCe / Access`
 * 免部署，系统自动创建数据库表结构，以及初始化数据，无需人工干涉
 * 强大的视图引擎，支持子项目视图重写父项目相同位置视图，任意覆盖修改默认界面
+* 内置富文本（Quill）与 Markdown（EasyMDE）双编辑器，支持图片上传与安全控制
 
 ---
 ## ASP.NET Core 安装

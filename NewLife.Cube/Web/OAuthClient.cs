@@ -8,6 +8,7 @@ using NewLife.Log;
 using NewLife.Model;
 using NewLife.Reflection;
 using NewLife.Serialization;
+using SexKinds = XCode.Membership.SexKinds;
 
 namespace NewLife.Web;
 
@@ -89,14 +90,14 @@ public class OAuthClient
     public DateTime Expire { get; set; }
 
     /// <summary>访问项</summary>
-    public IDictionary<String, String> Items { get; set; }
+    public IDictionary<String, Object> Items { get; set; }
     #endregion
 
     #region 构造
     /// <summary>实例化</summary>
     public OAuthClient()
     {
-        Name = GetType().Name.TrimEnd("Client");
+        Name = GetType().Name.TrimSuffix("Client");
 
         // 标准地址格式
         AuthUrl = "authorize?response_type={response_type}&client_id={key}&redirect_uri={redirect}&state={state}&scope={scope}";
@@ -120,7 +121,7 @@ public class OAuthClient
             var dic = new Dictionary<String, Type>(StringComparer.OrdinalIgnoreCase);
             foreach (var item in typeof(OAuthClient).GetAllSubclasses())
             {
-                var key = item.Name.TrimEnd("Client");
+                var key = item.Name.TrimSuffix("Client");
                 var ct = item.CreateInstance() as OAuthClient;
                 if (!ct.Name.IsNullOrEmpty()) key = ct.Name;
 
@@ -185,6 +186,9 @@ public class OAuthClient
         if (!mi.Secret.IsNullOrEmpty()) Secret = mi.Secret;
         if (!mi.Scope.IsNullOrEmpty()) Scope = mi.Scope;
         if (!mi.FieldMap.IsNullOrEmpty()) FieldMap = JsonParser.Decode(mi.FieldMap);
+
+        // 统一携带配置所属租户，保证浏览器SSO与微信登录等所有路径租户传播一致
+        TenantId = mi.TenantId;
 
         Config = mi;
     }
@@ -252,14 +256,14 @@ public class OAuthClient
         var dic = GetNameValues(html);
         if (dic != null)
         {
-            if (dic.ContainsKey("access_token")) AccessToken = dic["access_token"].Trim();
-            if (dic.ContainsKey("expires_in")) Expire = DateTime.Now.AddSeconds(dic["expires_in"].Trim().ToInt());
-            if (dic.ContainsKey("refresh_token")) RefreshToken = dic["refresh_token"].Trim();
+            if (dic.TryGetValue("access_token", out var v) && v != null) AccessToken = v.ToString().Trim();
+            if (dic.TryGetValue("expires_in", out v) && v != null) Expire = DateTime.Now.AddSeconds(v.ToInt());
+            if (dic.TryGetValue("refresh_token", out v) && v != null) RefreshToken = v.ToString().Trim();
 
             // 如果响应区域包含用户信息，则增加用户地址
-            if (UserUrl.IsNullOrEmpty() && dic.ContainsKey("scope"))
+            if (UserUrl.IsNullOrEmpty() && dic.TryGetValue("scope", out v) && v != null)
             {
-                var ss = dic["scope"].Trim().Split(",");
+                var ss = v.ToString().Trim().Split(",");
                 if (ss.Contains("UserInfo"))
                 {
                     UserUrl = "userinfo?access_token={token}";
@@ -267,7 +271,9 @@ public class OAuthClient
                 }
             }
 
-            OnGetInfo(dic);
+            // 提取字符串值传给 OnGetInfo（嵌套对象不参与字段映射）
+            var strDic = dic.Where(e => e.Value is String).ToDictionary(e => e.Key, e => (String)e.Value);
+            OnGetInfo(strDic);
         }
         Items = dic;
 
@@ -294,10 +300,11 @@ public class OAuthClient
         var dic = GetNameValues(html);
         if (dic != null)
         {
-            if (dic.ContainsKey("expires_in")) Expire = DateTime.Now.AddSeconds(dic["expires_in"].Trim().ToInt());
-            if (dic.ContainsKey("openid")) OpenID = dic["openid"].Trim();
+            if (dic.TryGetValue("expires_in", out var v) && v != null) Expire = DateTime.Now.AddSeconds(v.ToInt());
+            if (dic.TryGetValue("openid", out v) && v != null) OpenID = v.ToString().Trim();
 
-            OnGetInfo(dic);
+            var strDic = dic.Where(e => e.Value is String).ToDictionary(e => e.Key, e => (String)e.Value);
+            OnGetInfo(strDic);
         }
         Items = dic;
 
@@ -318,8 +325,8 @@ public class OAuthClient
     /// <summary>昵称</summary>
     public String NickName { get; set; }
 
-    /// <summary>性别。0未知，1男，2女</summary>
-    public Int32 Sex { get; set; }
+    /// <summary>性别。未知、男、女</summary>
+    public SexKinds Sex { get; set; }
 
     /// <summary>用户代码</summary>
     public String UserCode { get; set; }
@@ -385,8 +392,8 @@ public class OAuthClient
         var dic = GetNameValues(html);
         if (dic != null)
         {
-
-            OnGetInfo(dic);
+            var strDic = dic.Where(e => e.Value is String).ToDictionary(e => e.Key, e => (String)e.Value);
+            OnGetInfo(strDic);
 
             // 合并字典
             if (Items == null)
@@ -486,26 +493,26 @@ public class OAuthClient
     /// <summary>获取名值字典</summary>
     /// <param name="html"></param>
     /// <returns></returns>
-    protected virtual IDictionary<String, String> GetNameValues(String html)
+    protected virtual IDictionary<String, Object> GetNameValues(String html)
     {
         // 部分提供者的返回Json不是{开头，比如QQ
         var p1 = html.IndexOf('{');
         var p2 = html.LastIndexOf('}');
         if (p1 > 0 && p2 > p1) html = html.Substring(p1, p2 - p1 + 1);
 
-        IDictionary<String, String> dic = null;
+        IDictionary<String, Object> dic = null;
         // Json格式转为名值字典
         if (p1 >= 0 && p2 > p1)
         {
             var js = JsonParser.Decode(html);
-            dic = new Dictionary<String, String>();
+            dic = new Dictionary<String, Object>();
             foreach (var item in js)
             {
                 var v = item.Value;
                 if (v is IList<Object> list)
                     dic[item.Key] = "[" + list.Join() + "]";
                 else if (v is IDictionary<String, Object> dic2)
-                    dic[item.Key] = dic2.ToJson();
+                    dic[item.Key] = dic2;
                 else if (v != null)
                     dic[item.Key] = v + "";
             }
@@ -513,10 +520,10 @@ public class OAuthClient
         // Url格式转为名值字典
         else if (html.Contains("=") && html.Contains("&"))
         {
-            dic = html.SplitAsDictionary("=", "&");
+            dic = html.SplitAsDictionary("=", "&").ToDictionary(e => e.Key, e => (Object)e.Value);
         }
 
-        return dic.ToNullable(StringComparer.OrdinalIgnoreCase);
+        return dic != null ? new Dictionary<String, Object>(dic, StringComparer.OrdinalIgnoreCase) : null;
     }
 
     /// <summary>最后一次请求的响应内容</summary>
@@ -583,7 +590,7 @@ public class OAuthClient
         //if (asm != null)
         //{
         //    var aname = asm.GetName();
-        //    var os = Environment.OSVersion?.ToString().TrimStart("Microsoft ");
+        //    var os = Environment.OSVersion?.ToString().TrimPrefix("Microsoft ");
         //    userAgent = $"{aname.Name}/{aname.Version} ({os})";
         //}
 
@@ -609,7 +616,7 @@ public class OAuthClient
         if (dic.TryGetValue("username", out str)) UserName = str.Trim();
         if (dic.TryGetValue("user_name", out str)) UserName = str.Trim();
 
-        if (dic.TryGetValue("sex", out str)) Sex = str.Trim().ToInt();
+        if (dic.TryGetValue("sex", out str)) Sex = ParseSex(str);
 
         if (dic.TryGetValue("nick", out str)) NickName = str.Trim();
         if (dic.TryGetValue("nickname", out str)) NickName = str.Trim();
@@ -645,6 +652,16 @@ public class OAuthClient
         if (dic.TryGetValue("province", out str)) city += str.Trim();
         if (dic.TryGetValue("city", out str)) city += "/" + str.Trim();
         if (!city.IsNullOrEmpty() && city != "/") AreaName = city.Trim('/');
+
+        // 地区编码。行政区划代码，如 310116，可直接作为 User.AreaId 使用
+        if (dic.TryGetValue("areaid", out str)) AreaId = str.ToInt();
+        if (dic.TryGetValue("area_id", out str)) AreaId = str.ToInt();
+        if (dic.TryGetValue("areacode", out str)) AreaId = str.ToInt();
+        if (dic.TryGetValue("area_code", out str)) AreaId = str.ToInt();
+
+        // 地区名。多级路径用 / 分隔，如 上海市/金山区，供按名称匹配 Area
+        if (dic.TryGetValue("areaName", out str)) AreaName = str.Trim();
+        if (dic.TryGetValue("area_name", out str)) AreaName = str.Trim();
 
         // 生日
         if (dic.TryGetValue("birthday", out str))
@@ -696,10 +713,35 @@ public class OAuthClient
     public String GetAvatarUrl()
     {
         var av = Avatar;
-        if (av != null && av.StartsWith("/") && Server.StartsWithIgnoreCase("http"))
-            return new Uri(new Uri(Server), av) + "";
+        if (av != null && av.StartsWith("/"))
+        {
+            // 头像地址用于浏览器展示，优先使用外网地址
+            var baseUrl = !Server.IsNullOrEmpty() ? Server : AccessServer;
+            if (baseUrl.StartsWithIgnoreCase("http"))
+                return new Uri(new Uri(baseUrl), av) + "";
+        }
 
         return av;
+    }
+
+    /// <summary>解析性别。兼容数字 0/1/2、中文 未知/男/女、英文 unknown/male/female 等写法</summary>
+    /// <param name="value">第三方返回的性别值</param>
+    /// <returns>本地性别。未知、男、女</returns>
+    protected virtual SexKinds ParseSex(String value)
+    {
+        if (value.IsNullOrEmpty()) return SexKinds.未知;
+
+        value = value.Trim();
+
+        // 优先数字解析，兼容 "1"/"2"/"0"
+        var n = value.ToInt();
+        if (n > 0) return (SexKinds)n;
+
+        // 兼容枚举字符串。中文枚举名 男/女
+        if (value.EqualIgnoreCase("男", "male", "m")) return SexKinds.男;
+        if (value.EqualIgnoreCase("女", "female", "f")) return SexKinds.女;
+
+        return SexKinds.未知;
     }
     #endregion
 

@@ -16,7 +16,6 @@ using XCode;
 using XCode.Configuration;
 using XCode.Membership;
 using XCode.Model;
-using ExcelReader = NewLife.Office.ExcelReader;
 
 namespace NewLife.Cube;
 
@@ -32,6 +31,9 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
     #region 构造
     /// <summary>实例化</summary>
     public EntityController() => PageSetting.IsReadOnly = false;
+
+    /// <summary>是否启用基于 Model.xml 元数据的自动字段校验（必填、长度等）。默认 true。子类可 override 返回 false 关闭</summary>
+    protected virtual Boolean EnableFieldValidation => false;
     #endregion
 
     #region 默认Action
@@ -516,11 +518,21 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
         var context = new ImportContext { Name = name, Stream = stream, Page = page };
         context["_json"] = json;
 
-        // 解析json
-        foreach (var item in json.Decode() as IList<Object>)
+        // 解析json，仅支持数组根节点，其它格式给出明确错误
+        var items = json.Decode() as IList<Object>;
+        if (items == null) throw new XException("Json导入仅支持数组格式！");
+
+        foreach (var item in items)
         {
             var data = item as IDictionary<String, Object>;
             total++;
+
+            // 非对象元素（如标量）无法映射字段，跳过
+            if (data == null)
+            {
+                blank++;
+                continue;
+            }
 
             // 实例化实体对象，读取一行，逐个字段赋值
             var entity = factory.Create() as TEntity;
@@ -576,7 +588,8 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
             if (entry.Length <= 0) continue;
 
             var ext = Path.GetExtension(entry.Name).ToLower();
-            if (ext.IsNullOrEmpty()) return 0;
+            // 无扩展名的文件无法识别类型，跳过该文件，不中止整个导入
+            if (ext.IsNullOrEmpty()) continue;
 
             var entryName = entry.Name[..^ext.Length];
             var type = Type.GetType(entryName) ?? entryName.GetTypeEx();
@@ -692,10 +705,11 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
 
     /// <summary>上传编辑器文件，关联当前实体</summary>
     /// <param name="file">上传文件</param>
-    /// <param name="id">实体主键。编辑时传入可关联到具体实体；为空时创建临时实体用于路径归类</param>
-    /// <returns></returns>
+    /// <param name="id">实体主键。大于零时关联已有实体；为零时属新增场景，以临时实体归类路径，表单保存后通过 attachmentIds 绑定主记录</param>
+    /// <param name="title">附件标题（主记录显示名）。为空时使用 entity.ToString()；新增场景下主记录尚未保存，可传入预期标题</param>
+    /// <returns>附件编号、文件路径、MIME 类型</returns>
     [HttpPost]
-    public virtual async Task<ActionResult> UploadFile(IFormFile file, String id = null)
+    public virtual async Task<ActionResult> UploadFile(IFormFile file, String id = null, String title = null)
     {
         if (!ValidateUploadFile(file, out var error))
             return new JsonResult(new { error });
@@ -710,6 +724,11 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
         try
         {
             att = await SaveFile(entity, file, null, null);
+            if (!title.IsNullOrEmpty())
+            {
+                att.Title = title;
+                att.Update();
+            }
         }
         catch (Exception ex)
         {
@@ -717,7 +736,48 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
         }
 
         var url = ViewHelper.GetAttachmentUrl(att);
-        return Json(0, null, new { filePath = url, contentType = att.ContentType });
+        return Json(0, null, new { attId = att.Id, filePath = url, contentType = att.ContentType });
+    }
+
+    /// <summary>从请求 QueryString 或表单中读取 attachmentIds 参数</summary>
+    /// <returns>附件 ID 数组；无则返回空数组</returns>
+    protected virtual Int64[] GetAttachmentIds()
+    {
+        if (Request.Query.TryGetValue("attachmentIds", out var qv) && qv.Count > 0)
+            return qv.Select(s => s.ToLong()).Where(id => id > 0).ToArray();
+        if (Request.HasFormContentType && Request.Form.TryGetValue("attachmentIds", out var fv) && fv.Count > 0)
+            return fv.Select(s => s.ToLong()).Where(id => id > 0).ToArray();
+        return [];
+    }
+
+    /// <summary>将通过独立上传的临时附件绑定到已保存主记录。补写 Key/Title/Url 字段</summary>
+    /// <param name="entity">主记录实体，需已保存并持有主键</param>
+    /// <returns></returns>
+    protected virtual Task BindAttachments(TEntity entity)
+    {
+        var ids = GetAttachmentIds();
+        if (ids == null || ids.Length == 0) return Task.CompletedTask;
+
+        var uid = Factory.Unique != null ? entity[Factory.Unique] : null;
+        if (uid == null) return Task.CompletedTask;
+
+        var key = uid + "";
+        var title = entity + "";
+        var ss = GetControllerAction();
+        var url = $"/{ss[0]}/{ss[1]}?id={key}";
+
+        foreach (var attId in ids)
+        {
+            var att = Attachment.FindById(attId);
+            if (att == null) continue;
+
+            att.Key = key;
+            if (!title.IsNullOrEmpty()) att.Title = title;
+            if (att.Url.IsNullOrEmpty()) att.Url = url;
+            att.Update();
+        }
+
+        return Task.CompletedTask;
     }
 
     /// <summary>保存所有上传文件，并保存附件访问路径到实体对象的对应属性</summary>
@@ -769,7 +829,7 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
     /// <param name="file">文件</param>
     /// <param name="uploadPath">上传目录，默认使用UploadPath配置</param>
     /// <param name="fileName">文件名，如若指定则忽略前面的目录</param>
-    /// <returns></returns>
+    /// <returns>已保存的附件实体</returns>
     protected virtual async Task<Attachment> SaveFile(TEntity entity, IFormFile file, String uploadPath, String fileName)
     {
         if (file == null) throw new ArgumentNullException(nameof(file));
@@ -800,22 +860,14 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
         var msg = "";
         try
         {
-            rs = await att.SaveFile(file.OpenReadStream(), uploadPath, fileName);
-
-            // 广播指定附件在当前节点可用
-            var fileStorage = HttpContext.RequestServices.GetService<IFileStorage>();
-            if (fileStorage != null)
+            // 上传流使用完毕后立即释放，避免文件句柄泄漏；保存完成后回调与上传流无关
             {
-                // 忽略异常
-                try
-                {
-                    await fileStorage.PublishNewFileAsync(att.Id, att.FilePath, HttpContext.RequestAborted);
-                }
-                catch (Exception ex2)
-                {
-                    span?.SetError(ex2);
-                }
+                using var stream = file.OpenReadStream();
+                rs = await att.SaveFile(stream, uploadPath, fileName);
             }
+
+            // 保存完成后回调。默认广播附件；子类可重载，在广播前执行额外处理（如向压缩包注入配置）
+            await OnFileSaved(entity, att, uploadPath, file);
         }
         catch (Exception ex)
         {
@@ -835,6 +887,30 @@ public partial class EntityController<TEntity, TModel> : ReadOnlyEntityControlle
         }
 
         return att;
+    }
+
+    /// <summary>保存文件完成后回调。默认广播附件到分布式存储；子类可重载，在广播前执行额外处理</summary>
+    /// <param name="entity">实体对象</param>
+    /// <param name="att">附件实体</param>
+    /// <param name="uploadPath">上传目录</param>
+    /// <param name="file">上传文件</param>
+    /// <returns></returns>
+    protected virtual async Task OnFileSaved(TEntity entity, Attachment att, String uploadPath, IFormFile file)
+    {
+        // 广播指定附件在当前节点可用
+        var fileStorage = HttpContext.RequestServices.GetService<IFileStorage>();
+        if (fileStorage != null)
+        {
+            // 忽略异常
+            try
+            {
+                await fileStorage.PublishNewFileAsync(att.Id, att.FilePath, HttpContext.RequestAborted);
+            }
+            catch (Exception ex2)
+            {
+                DefaultSpan.Current?.SetError(ex2);
+            }
+        }
     }
     #endregion
 }

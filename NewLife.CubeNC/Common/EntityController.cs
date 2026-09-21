@@ -34,6 +34,7 @@ public partial class EntityController<TEntity, TModel>
         }
         catch (Exception ex)
         {
+            DefaultSpan.Current?.SetError(ex);
             var err = ex.GetTrue().Message;
             WriteLog("Delete", false, err);
 
@@ -126,6 +127,8 @@ public partial class EntityController<TEntity, TModel>
         }
         catch (Exception ex)
         {
+            DefaultSpan.Current?.SetError(ex);
+
             var code = ex is ApiException ae ? ae.Code : 500;
             var err = ex.Message;
             ModelState.AddModelError((ex as ArgumentException)?.ParamName ?? "", ex.Message);
@@ -229,6 +232,7 @@ public partial class EntityController<TEntity, TModel>
         }
         catch (Exception ex)
         {
+            DefaultSpan.Current?.SetError(ex);
             err = ex.Message;
             ModelState.AddModelError((ex as ArgumentException)?.ParamName ?? "", ex.Message);
         }
@@ -322,6 +326,7 @@ public partial class EntityController<TEntity, TModel>
         }
         catch (Exception ex)
         {
+            DefaultSpan.Current?.SetError(ex);
             XTrace.WriteException(ex);
 
             WriteLog("导入Excel", false, ex.GetMessage());
@@ -444,7 +449,8 @@ public partial class EntityController<TEntity, TModel>
                 }
             }
 
-            total = updates.Count;
+            // 统计待处理行数 = 软删 + 硬删，避免纯硬删场景 total 为 0 造成文案误导
+            total = updates.Count + deletes.Count;
             success += updates.Update();
             success += deletes.Delete();
 
@@ -551,6 +557,9 @@ public partial class EntityController<TEntity, TModel>
     #endregion
 
     #region 同步/还原
+    // 复用 HttpClient，避免每次同步创建连接导致端口耗尽
+    private static readonly HttpClient _httpClient = new();
+
     /// <summary>同步数据</summary>
     /// <returns></returns>
     [NonAction]
@@ -581,17 +590,12 @@ public partial class EntityController<TEntity, TModel>
         var ctrl = cs[0].IsNullOrEmpty() ? cs[1] : $"{cs[0]}/{cs[1]}";
         if (!mds.Contains(ctrl)) throw new InvalidOperationException($"[{ctrl}]未配置为允许同步 Sync:Models");
 
-        // 创建客户端，准备发起请求
+        // 复用静态 HttpClient，避免每次同步创建连接导致端口耗尽
         var url = server.EnsureEnd("/") + $"{ctrl}/Json/{token}?PageSize=100000";
-
-        var http = new HttpClient
-        {
-            BaseAddress = new Uri(url)
-        };
 
         var sw = Stopwatch.StartNew();
 
-        var list = await http.InvokeAsync<TEntity[]>(HttpMethod.Get, null);
+        var list = await _httpClient.InvokeAsync<TEntity[]>(HttpMethod.Get, url);
 
         sw.Stop();
 
@@ -609,7 +613,11 @@ public partial class EntityController<TEntity, TModel>
             {
                 fact.Session.Truncate();
             }
-            catch (Exception ex) { XTrace.WriteException(ex); }
+            catch (Exception ex)
+            {
+                DefaultSpan.Current?.SetError(ex);
+                XTrace.WriteException(ex);
+            }
 
             // 插入
             //ms.All(e => { e.AllChilds = new List<Menu>(); return true; });
