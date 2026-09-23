@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MFA 二步验证 — 界面原型</title>
+  <style>
+    :root {
+      --bg: #e8eef3;
+      --panel: #fff;
+      --ink: #1f2a33;
+      --muted: #5c6b76;
+      --line: #d5dee6;
+      --accent: #2f6fed;
+      --accent-soft: #e8f0fe;
+      --ok: #1a7f4b;
+      --warn: #b45f06;
+      --danger: #c62828;
+      --shadow: 0 8px 28px rgba(31, 42, 51, 0.08);
+      --radius: 10px;
+      --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 500px at 10% -10%, #d7e6ff 0%, transparent 55%),
+        radial-gradient(900px 400px at 100% 0%, #dff3ea 0%, transparent 50%),
+        var(--bg);
+      line-height: 1.5;
+    }
+    header.app {
+      position: sticky; top: 0; z-index: 10;
+      backdrop-filter: blur(8px);
+      background: rgba(255,255,255,.85);
+      border-bottom: 1px solid var(--line);
+      padding: 14px 24px;
+      display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+    }
+    header.app h1 { font-size: 16px; margin: 0; font-weight: 700; }
+    header.app p { margin: 0; color: var(--muted); font-size: 13px; }
+    nav.tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+    nav.tabs button {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 999px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    nav.tabs button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .note {
+      background: var(--accent-soft);
+      border: 1px solid #c9dbfd;
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+    .screen { display: none; }
+    .screen.active { display: block; }
+    .frame {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .frame-bar {
+      background: #f4f7fa;
+      border-bottom: 1px solid var(--line);
+      padding: 10px 14px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex; gap: 8px; align-items: center;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #c5d0da; }
+    .login-shell {
+      min-height: 520px;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(160deg, #1b3a5f 0%, #2a5f8f 45%, #3d7ea6 100%);
+      padding: 32px 16px;
+    }
+    .card {
+      width: min(380px, 100%);
+      background: #fff;
+      border-radius: 12px;
+      padding: 28px 24px 22px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.18);
+    }
+    .brand {
+      text-align: center;
+      margin-bottom: 18px;
+    }
+    .brand .logo {
+      width: 48px; height: 48px; margin: 0 auto 8px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #2f6fed, #39a0ff);
+      display: grid; place-items: center; color: #fff; font-weight: 700;
+    }
+    .brand h2 { margin: 0; font-size: 18px; }
+    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    label.field { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 6px; }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 14px;
+    }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      border: none; border-radius: 8px; padding: 10px 14px;
+      font-size: 14px; cursor: pointer; text-decoration: none;
+    }
+    .btn-primary { background: var(--accent); color: #fff; width: 100%; margin-top: 16px; }
+    .btn-ghost { background: transparent; color: var(--accent); border: 1px solid #c9dbfd; }
+    .btn-danger { background: #fdecea; color: var(--danger); border: 1px solid #f5c6c2; }
+    .btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .methods {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin: 12px 0 4px;
+    }
+    .methods button {
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      border-radius: 8px;
+      padding: 8px 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .methods button.on {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    .otp {
+      letter-spacing: 8px;
+      text-align: center;
+      font-size: 22px;
+      font-weight: 600;
+    }
+    .admin-layout {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      min-height: 560px;
+    }
+    .side {
+      background: #243447;
+      color: #d9e2ec;
+      padding: 16px 12px;
+      font-size: 13px;
+    }
+    .side .item { padding: 8px 10px; border-radius: 6px; margin-bottom: 4px; opacity: .75; }
+    .side .item.on { background: rgba(255,255,255,.12); opacity: 1; }
+    .content { padding: 18px 20px 28px; }
+    .pills {
+      display: flex; gap: 6px; flex-wrap: wrap;
+      margin-bottom: 16px; padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .pills span {
+      padding: 6px 12px; border-radius: 999px; font-size: 13px;
+      background: #f1f5f9; color: var(--muted);
+    }
+    .pills span.on { background: var(--accent); color: #fff; }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .tile {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      background: #fcfdff;
+    }
+    .tile h3 { margin: 0 0 6px; font-size: 14px; }
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      margin-bottom: 8px;
+    }
+    .badge.on { background: #e6f6ed; color: var(--ok); }
+    .badge.off { background: #f1f5f9; color: var(--muted); }
+    .qr {
+      width: 160px; height: 160px;
+      margin: 12px auto;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      display: grid; place-items: center;
+      background:
+        repeating-conic-gradient(#111 0% 25%, #fff 0% 50%) 0 0 / 16px 16px;
+      color: #fff;
+      text-shadow: 0 0 4px #000;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .secret {
+      font-family: ui-monospace, Consolas, monospace;
+      background: #f4f7fa;
+      border-radius: 6px;
+      padding: 8px;
+      text-align: center;
+      letter-spacing: 1px;
+      font-size: 13px;
+    }
+    .codes {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .codes code {
+      background: #f4f7fa;
+      border-radius: 6px;
+      padding: 8px;
+      text-align: center;
+      font-size: 13px;
+    }
+    .cfg-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .cfg-table th, .cfg-table td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+    }
+    .cfg-table th { width: 28%; color: var(--muted); font-weight: 500; }
+    .toggle {
+      width: 42px; height: 24px; border-radius: 999px;
+      background: #c5d0da; position: relative; display: inline-block;
+    }
+    .toggle::after {
+      content: ""; position: absolute; top: 3px; left: 3px;
+      width: 18px; height: 18px; border-radius: 50%; background: #fff;
+    }
+    .toggle.on { background: var(--accent); }
+    .toggle.on::after { left: 21px; }
+    .flow {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+      margin: 16px 0; font-size: 13px;
+    }
+    .flow .step {
+      background: #fff; border: 1px solid var(--line);
+      border-radius: 8px; padding: 8px 10px;
+    }
+    .flow .arrow { color: var(--muted); }
+    footer {
+      text-align: center; color: var(--muted); font-size: 12px;
+      padding: 8px 24px 28px;
+    }
+    @media (max-width: 720px) {
+      .admin-layout { grid-template-columns: 1fr; }
+      .side { display: none; }
+      .methods { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header class="app">
+    <div>
+      <h1>MFA 二步验证 — 界面原型（待确认）</h1>
+      <p>确认本原型后再进入编码。点击右侧切换页面。</p>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="active" data-screen="p1">P1 密码登录</button>
+      <button data-screen="p2">P2 MFA 挑战</button>
+      <button data-screen="p3">P3 安全设置</button>
+      <button data-screen="p4">P4 绑定 TOTP</button>
+      <button data-screen="p5">P5 恢复码 / 解绑</button>
+      <button data-screen="p6">P6 系统设置</button>
+    </nav>
+  </header>
+
+  <main>
+    <div class="note">
+      <strong>交互主线：</strong>
+      密码正确 → 若 EnableMfa 且用户已绑第二因子 → 进入 P2 挑战（不发 Token）→ 校验通过后进入后台。
+      关闭 MFA 则停在 P1 现网行为。用户在 P3–P5 管理绑定；管理员在 P6 配置全局开关。
+    </div>
+
+    <div class="flow">
+      <div class="step">P1 账号密码</div><span class="arrow">→</span>
+      <div class="step">服务端判定 MFA</div><span class="arrow">→</span>
+      <div class="step">P2 第二因子</div><span class="arrow">→</span>
+      <div class="step">CompleteLogin</div>
+    </div>
+
+    <!-- P1 -->
+    <section class="screen active" id="p1">
+      <div class="frame">
+        <div class="frame-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          /Admin/User/Login — 密码步（现有布局，本期不改视觉主结构）
+        </div>
+        <div class="login-shell">
+          <div class="card">
+            <div class="brand">
+              <div class="logo">魔</div>
+              <h2>魔方 Cube</h2>
+              <p>登录</p>
+            </div>
+            <label class="field">用户名</label>
+            <input value="admin" readonly />
+            <label class="field">密码</label>
+            <input type="password" value="********" readonly />
+            <label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13px;color:var(--muted)">
+              <input type="checkbox" style="width:auto" /> 记住我
+            </label>
+            <button class="btn btn-primary" onclick="show('p2')">登录 →（模拟需 MFA）</button>
+            <p class="hint">EnableMfa=false 时此处直接进后台，不出现 P2。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- P2 -->
+    <section class="screen" id="p2">
+      <div class="frame">
+        <div class="frame-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          /Admin/User/Login#mfa — 二步验证挑战
+        </div>
+        <div class="login-shell">
+          <div class="card">
+            <div class="brand">
+              <div class="logo">2F</div>
+              <h2>二步验证</h2>
+              <p>账号密码已通过，请完成第二因子</p>
+            </div>
+            <div class="methods" id="methodTabs">
+              <button class="on" type="button">验证器</button>
+              <button type="button">短信</button>
+              <button type="button">邮件</button>
+              <button type="button">恢复码</button>
+            </div>
+            <label class="field">验证码</label>
+            <input class="otp" maxlength="8" placeholder="••••••" />
+            <p class="hint" id="methodHint">打开 Authenticator，输入 6 位动态码。</p>
+            <button class="btn btn-primary">验证并登录</button>
+            <div class="btn-row">
+              <button class="btn btn-ghost" style="flex:1">重新发送（短信/邮件）</button>
+              <button class="btn btn-ghost" style="flex:1" onclick="show('p1')">返回登录</button>
+            </div>
+            <p class="hint">仅展示用户已启用的 methods；未绑通道不出现。API 返回 code=1002 + mfaToken。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- P3 -->
+    <section class="screen" id="p3">
+      <div class="frame">
+        <div class="frame-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          /Admin/User/Mfa — 安全设置
+        </div>
+        <div class="admin-layout">
+          <aside class="side">
+            <div class="item">工作台</div>
+            <div class="item on">个人中心</div>
+            <div class="item">系统管理</div>
+          </aside>
+          <div class="content">
+            <div class="pills">
+              <span>基本信息</span>
+              <span>修改密码</span>
+              <span>第三方授权</span>
+              <span class="on">安全设置</span>
+              <span>租户信息</span>
+            </div>
+            <h2 style="margin:0 0 6px;font-size:18px;">二步验证（MFA）</h2>
+            <p style="margin:0 0 16px;color:var(--muted);font-size:13px;">
+              启用后，登录除密码外还需第二因子。建议至少绑定一种通道并保存恢复码。
+            </p>
+            <div class="status-grid">
+              <div class="tile">
+                <span class="badge on">已启用</span>
+                <h3>身份验证器 TOTP</h3>
+                <p class="hint">已绑定 · 推荐</p>
+                <div class="btn-row">
+                  <button class="btn btn-ghost" onclick="show('p4')">重新绑定</button>
+                  <button class="btn btn-danger">解绑</button>
+                </div>
+              </div>
+              <div class="tile">
+                <span class="badge on">已启用</span>
+                <h3>短信验证码</h3>
+                <p class="hint">手机 138****8000（已验证）</p>
+                <div class="btn-row">
+                  <button class="btn btn-ghost">关闭通道</button>
+                </div>
+              </div>
+              <div class="tile">
+                <span class="badge off">未启用</span>
+                <h3>邮件验证码</h3>
+                <p class="hint">请先在基本信息验证邮箱</p>
+                <div class="btn-row">
+                  <button class="btn btn-ghost" disabled>启用</button>
+                </div>
+              </div>
+              <div class="tile">
+                <span class="badge on">剩余 8 个</span>
+                <h3>恢复码</h3>
+                <p class="hint">丢失设备时使用，一次性</p>
+                <div class="btn-row">
+                  <button class="btn btn-ghost" onclick="show('p5')">查看 / 重新生成</button>
+                </div>
+              </div>
+            </div>
+            <div class="btn-row" style="margin-top:20px">
+              <button class="btn btn-danger">关闭 MFA</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- P4 -->
+    <section class="screen" id="p4">
+      <div class="frame">
+        <div class="frame-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          /Admin/User/Mfa/Totp — 绑定验证器
+        </div>
+        <div class="admin-layout">
+          <aside class="side">
+            <div class="item on">个人中心 / 安全设置</div>
+          </aside>
+          <div class="content" style="max-width:520px">
+            <h2 style="margin-top:0;font-size:18px;">绑定身份验证器</h2>
+            <ol style="padding-left:18px;color:var(--muted);font-size:13px">
+              <li>使用 Google Authenticator / Microsoft Authenticator 扫描二维码</li>
+              <li>或手动输入密钥</li>
+              <li>输入 App 中显示的 6 位码完成确认</li>
+            </ol>
+            <div class="qr">QR otpauth</div>
+            <div class="secret">JBSW Y3DP EHPK 3PXP</div>
+            <label class="field">确认验证码</label>
+            <input class="otp" maxlength="6" placeholder="••••••" />
+            <button class="btn btn-primary" onclick="show('p5')">确认绑定 → 展示恢复码</button>
+            <p class="hint">确认成功前不启用 TOTP；密钥仅此流程展示。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- P5 -->
+    <section class="screen" id="p5">
+      <div class="frame">
+        <div class="frame-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          恢复码展示 / 关闭 MFA 确认
+        </div>
+        <div class="admin-layout">
+          <aside class="side"><div class="item on">安全设置</div></aside>
+          <div class="content" style="max-width:560px">
+            <h2 style="margin-top:0;font-size:18px;">请妥善保存恢复码</h2>
+            <p class="hint">每个恢复码只能使用一次。关闭本页后明文不再显示。</p>
+            <div class="codes">
+              <code>A1B2-C3D4</code><code>E5F6-G7H8</code>
+              <code>I9J0-K1L2</code><code>M3N4-O5P6</code>
+              <code>Q7R8-S9T0</code><code>U1V2-W3X4</code>
+              <code>Y5Z6-A7B8</code><code>C9D0-E1F2</code>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary" style="width:auto">我已保存</button>
+              <button class="btn btn-ghost">复制全部</button>
+              <button class="btn btn-ghost">重新生成</button>
+            </div>
+            <hr style="border:none;border-top:1px solid var(--line);margin:28px 0" />
+            <h3 style="font-size:16px;margin:0 0 8px">关闭 MFA</h3>
+            <p class="hint">需输入当前第二因子或登录密码确认。</p>
+            <label class="field">当前验证码 / 密码</label>
+            <input placeholder="验证码或密码" />
+            <button class="btn btn-danger" style="margin-top:12px;width:auto">确认关闭</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- P6 -->
+    <section class="screen" id="p6">
+      <div class="frame">
+        <div class="frame-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          /Admin/Cube — 魔方设置 · 用户登录
+        </div>
+        <div class="content">
+          <h2 style="margin-top:0;font-size:18px;">用户登录</h2>
+          <table class="cfg-table">
+            <tr>
+              <th>启用 MFA 二步验证</th>
+              <td><span class="toggle on" title="EnableMfa"></span>
+                <span class="hint" style="margin-left:8px">关闭后所有用户密码登录不再要求第二因子</span></td>
+            </tr>
+            <tr>
+              <th>强制绑定 MFA</th>
+              <td><span class="toggle" title="MfaRequired"></span>
+                <span class="hint" style="margin-left:8px">未绑定用户密码正确后不得发 Token，引导至安全设置</span></td>
+            </tr>
+            <tr>
+              <th>MFA 挑战有效期（秒）</th>
+              <td><input style="max-width:160px" value="300" /></td>
+            </tr>
+            <tr>
+              <th>TOTP 签发方名称</th>
+              <td><input style="max-width:280px" value="NewLife.Cube" /></td>
+            </tr>
+            <tr>
+              <th>启用短信 / 邮件</th>
+              <td class="hint">沿用现有 EnableSms / EnableMail 与 SmsConfig / MailConfig，本表不重复造轮子</td>
+            </tr>
+          </table>
+          <button class="btn btn-primary" style="width:auto;margin-top:16px">保存</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    文档：<a href="../需求文档.md">需求</a> ·
+    <a href="../架构设计.md">架构</a> ·
+    <a href="../功能清单.md">功能清单</a>
+    — 请回复「原型确认」或提出修改意见。
+  </footer>
+
+  <script>
+    function show(id) {
+      document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('nav.tabs button').forEach(b => {
+        b.classList.toggle('active', b.dataset.screen === id);
+      });
+      document.getElementById(id).classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    document.getElementById('tabs').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-screen]');
+      if (btn) show(btn.dataset.screen);
+    });
+    const hints = [
+      '打开 Authenticator，输入 6 位动态码。',
+      '验证码已发送至 138****8000，5 分钟内有效。',
+      '验证码已发送至 a***@example.com。',
+      '输入绑定 MFA 时保存的一次性恢复码。'
+    ];
+    document.getElementById('methodTabs').addEventListener('click', e => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const buttons = [...btn.parentElement.children];
+      buttons.forEach(b => b.classList.remove('on'));
+      btn.classList.add('on');
+      document.getElementById('methodHint').textContent = hints[buttons.indexOf(btn)];
+    });
+  </script>
+</body>
+</html>
