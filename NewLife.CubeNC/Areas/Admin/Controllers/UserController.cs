@@ -17,6 +17,7 @@ using NewLife.Data;
 using NewLife.Log;
 using NewLife.Reflection;
 using NewLife.Security;
+using NewLife.Serialization;
 using NewLife.Web;
 using XCode;
 using XCode.Membership;
@@ -54,6 +55,7 @@ public class UserController : EntityController<User, UserModel>
     private readonly ICache _cache;
     private readonly PasswordService _passwordService;
     private readonly UserService _userService;
+    private readonly MfaService _mfaService;
     private readonly ITracer _tracer;
     private readonly ISmsVerifyCode _smsVerifyCode;
 
@@ -146,7 +148,7 @@ public class UserController : EntityController<User, UserModel>
         _isMobile = uAgent.Contains("Android") || uAgent.Contains("iPhone") || uAgent.Contains("iPad");
 
         if (filterContext.ActionDescriptor is ControllerActionDescriptor act &&
-            act.ActionName.EqualIgnoreCase(nameof(Detail), nameof(Edit), nameof(Info), nameof(ChangePassword), nameof(Binds), nameof(TenantSetting)))
+            act.ActionName.EqualIgnoreCase(nameof(Detail), nameof(Edit), nameof(Info), nameof(ChangePassword), nameof(Binds), nameof(TenantSetting), nameof(Mfa)))
         {
             PageSetting.NavView = "_User_Nav";
             PageSetting.EnableNavbar = false;
@@ -159,11 +161,12 @@ public class UserController : EntityController<User, UserModel>
     /// <param name="userService"></param>
     /// <param name="tracer"></param>
     /// <param name="smsVerifyCode"></param>
-    public UserController(PasswordService passwordService, ICacheProvider cacheProvider, UserService userService, ITracer tracer, ISmsVerifyCode smsVerifyCode = null)
+    public UserController(PasswordService passwordService, ICacheProvider cacheProvider, UserService userService, MfaService mfaService, ITracer tracer, ISmsVerifyCode smsVerifyCode = null)
     {
         _passwordService = passwordService;
         _cache = cacheProvider.Cache;
         _userService = userService;
+        _mfaService = mfaService;
         _tracer = tracer;
         _smsVerifyCode = smsVerifyCode;
     }
@@ -411,6 +414,22 @@ public class UserController : EntityController<User, UserModel>
             if (ModelState.IsValid)
             {
                 result = _userService.Login(loginModel, HttpContext);
+                if (result != null && result.Code == (Int32)CubeCode.MfaRequired && result.Extra is MfaChallengeModel challenge)
+                {
+                    if (IsJsonRequest)
+                        return Json((Int32)CubeCode.MfaRequired, result.Message, challenge);
+
+                    TempData["MfaChallenge"] = challenge.ToJson();
+                    return RedirectToAction(nameof(MfaChallenge), new { r = returnUrl });
+                }
+                if (result != null && result.Code == (Int32)CubeCode.MfaBindRequired && result.Extra is MfaChallengeModel setup)
+                {
+                    if (IsJsonRequest)
+                        return Json((Int32)CubeCode.MfaBindRequired, result.Message, setup);
+
+                    TempData["MfaSetup"] = setup.ToJson();
+                    return RedirectToAction(nameof(MfaSetup), new { r = returnUrl });
+                }
                 if (result != null && result.IsSuccess && result.Data != null && !result.Data.AccessToken.IsNullOrEmpty())
                 {
                     if (IsJsonRequest)
@@ -506,6 +525,213 @@ public class UserController : EntityController<User, UserModel>
             });
         }
     }
+
+    #region MFA 二步验证
+    /// <summary>MFA 挑战页</summary>
+    [AllowAnonymous]
+    [HttpGet]
+    public ActionResult MfaChallenge(String r = null)
+    {
+        var json = TempData["MfaChallenge"] as String;
+        var model = json.IsNullOrEmpty() ? null : json.ToJsonEntity<MfaChallengeModel>();
+        if (model == null || model.MfaToken.IsNullOrEmpty())
+            return RedirectToAction(nameof(Login), new { r });
+
+        ViewBag.ReturnUrl = r;
+        ViewBag.Title = "二步验证";
+        return View(model);
+    }
+
+    /// <summary>强制绑定页</summary>
+    [AllowAnonymous]
+    [HttpGet]
+    public ActionResult MfaSetup(String r = null)
+    {
+        var json = TempData["MfaSetup"] as String;
+        var model = json.IsNullOrEmpty() ? null : json.ToJsonEntity<MfaChallengeModel>();
+        if (model == null || model.MfaToken.IsNullOrEmpty())
+            return RedirectToAction(nameof(Login), new { r });
+
+        ViewBag.ReturnUrl = r;
+        ViewBag.Title = "绑定二步验证";
+        return View(model);
+    }
+
+    /// <summary>校验 MFA 并完成登录</summary>
+    [AllowAnonymous]
+    [HttpPost]
+    public ActionResult VerifyMfa(VerifyMfaModel model, String r = null)
+    {
+        try
+        {
+            var result = _userService.VerifyMfa(model, HttpContext);
+            if (IsJsonRequest)
+                return Json(0, "ok", new { Token = result.Data?.AccessToken, result.Data?.RefreshToken, result.Data?.ExpireIn });
+
+            if (!r.IsNullOrEmpty() && Url.IsLocalUrl(r)) return Redirect(r);
+            return RedirectToAction("Index", "Index");
+        }
+        catch (Exception ex)
+        {
+            if (IsJsonRequest) return Json(500, ex.Message);
+            ModelState.AddModelError("", ex.Message);
+            var challenge = _mfaService.GetChallenge(model?.MfaToken);
+            var user = challenge != null ? XCode.Membership.User.FindByID(challenge.UserId) : null;
+            var mfa = user != null ? UserMfa.FindByUserId(user.ID) : null;
+            var vm = new MfaChallengeModel
+            {
+                MfaToken = model?.MfaToken,
+                Methods = _mfaService.GetMethods(mfa, user),
+                ExpireIn = CubeSetting.Current.MfaTokenExpire,
+            };
+            ViewBag.ReturnUrl = r;
+            return View(nameof(MfaChallenge), vm);
+        }
+    }
+
+    /// <summary>发送 MFA 短信/邮件验证码</summary>
+    [AllowAnonymous]
+    [HttpPost]
+    public async Task<ActionResult> SendMfaCode(SendMfaCodeModel model)
+    {
+        try
+        {
+            await _mfaService.SendChallengeCode(model, HttpContext.GetUserHost());
+            return Json(0, "验证码已发送");
+        }
+        catch (Exception ex)
+        {
+            return Json(500, ex.Message);
+        }
+    }
+
+    /// <summary>安全设置（MFA）</summary>
+    [EntityAuthorize]
+    [HttpGet]
+    public ActionResult Mfa()
+    {
+        var user = ManageProvider.User as XCode.Membership.User;
+        if (user == null) return RedirectToAction(nameof(Login));
+        return View(_mfaService.GetStatus(user));
+    }
+
+    /// <summary>开始绑定 TOTP</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public ActionResult MfaTotpStart(String mfaToken = null)
+    {
+        try
+        {
+            var user = ResolveMfaUser(mfaToken);
+            var setup = _mfaService.StartTotpSetup(user);
+            return Json(0, "ok", setup);
+        }
+        catch (Exception ex)
+        {
+            return Json(500, ex.Message);
+        }
+    }
+
+    /// <summary>确认绑定 TOTP</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public ActionResult MfaTotpConfirm(String code, String mfaToken = null, String r = null)
+    {
+        try
+        {
+            var user = ResolveMfaUser(mfaToken);
+            var backups = _mfaService.ConfirmTotpSetup(user, code, HttpContext.GetUserHost());
+
+            // setupToken 场景：绑定后完成登录
+            if (!mfaToken.IsNullOrEmpty())
+            {
+                var state = _mfaService.GetChallenge(mfaToken);
+                if (state?.IsSetup == true)
+                {
+                    var login = _userService.CompleteSetupLogin(mfaToken, HttpContext);
+                    if (IsJsonRequest)
+                        return Json(0, "ok", new { Token = login.Data?.AccessToken, BackupCodes = backups });
+                    TempData["BackupCodes"] = backups.ToJson();
+                    if (!r.IsNullOrEmpty() && Url.IsLocalUrl(r)) return Redirect(r);
+                    return RedirectToAction(nameof(Mfa));
+                }
+            }
+
+            if (IsJsonRequest) return Json(0, "ok", new { BackupCodes = backups });
+            TempData["BackupCodes"] = backups.ToJson();
+            return RedirectToAction(nameof(Mfa));
+        }
+        catch (Exception ex)
+        {
+            if (IsJsonRequest) return Json(500, ex.Message);
+            ViewBag.StatusMessage = ex.Message;
+            return RedirectToAction(nameof(Mfa));
+        }
+    }
+
+    /// <summary>启停短信/邮件通道</summary>
+    [EntityAuthorize]
+    [HttpPost]
+    public ActionResult MfaChannel(MfaChannelModel model)
+    {
+        try
+        {
+            var user = ManageProvider.User as XCode.Membership.User;
+            _mfaService.SetChannel(user, model.Channel, model.Enable, HttpContext.GetUserHost());
+            return Json(0, "ok");
+        }
+        catch (Exception ex)
+        {
+            return Json(500, ex.Message);
+        }
+    }
+
+    /// <summary>关闭 MFA</summary>
+    [EntityAuthorize]
+    [HttpPost]
+    public ActionResult MfaDisable(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ManageProvider.User as XCode.Membership.User;
+            _mfaService.Disable(user, model.Method, model.Code, HttpContext.GetUserHost());
+            return Json(0, "已关闭");
+        }
+        catch (Exception ex)
+        {
+            return Json(500, ex.Message);
+        }
+    }
+
+    /// <summary>重新生成恢复码</summary>
+    [EntityAuthorize]
+    [HttpPost]
+    public ActionResult MfaBackupCodes(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ManageProvider.User as XCode.Membership.User;
+            var codes = _mfaService.RegenerateBackupCodes(user, model.Method, model.Code, HttpContext.GetUserHost());
+            return Json(0, "ok", codes);
+        }
+        catch (Exception ex)
+        {
+            return Json(500, ex.Message);
+        }
+    }
+
+    private XCode.Membership.User ResolveMfaUser(String mfaToken)
+    {
+        if (!mfaToken.IsNullOrEmpty())
+        {
+            var (user, _) = _mfaService.ResolveTokenUser(mfaToken);
+            return user;
+        }
+        var current = ManageProvider.User as XCode.Membership.User;
+        if (current == null || current.ID <= 0) throw new InvalidOperationException("用户未登录");
+        return current;
+    }
+    #endregion
 
     /// <summary>注销</summary>
     /// <returns></returns>

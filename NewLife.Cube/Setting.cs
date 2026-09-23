@@ -207,6 +207,26 @@ public class CubeSetting : Config<CubeSetting>
     [Description("验证附件访问。访问附件时，是否验证登录状态，默认true")]
     [Category("用户登录")]
     public Boolean ValidateAttachment { get; set; } = true;
+
+    /// <summary>启用 MFA 二步验证。开启后，已绑定第二因子的用户密码登录须再校验</summary>
+    [Description("启用 MFA 二步验证。开启后，已绑定第二因子的用户密码登录须再校验")]
+    [Category("用户登录")]
+    public Boolean EnableMfa { get; set; }
+
+    /// <summary>强制绑定 MFA。开启后未绑定用户密码正确也不得发令牌，须先完成绑定</summary>
+    [Description("强制绑定 MFA。开启后未绑定用户密码正确也不得发令牌，须先完成绑定")]
+    [Category("用户登录")]
+    public Boolean MfaRequired { get; set; }
+
+    /// <summary>MFA 挑战有效期。密码通过后第二因子挑战令牌有效秒数，默认300</summary>
+    [Description("MFA 挑战有效期。密码通过后第二因子挑战令牌有效秒数，默认300")]
+    [Category("用户登录")]
+    public Int32 MfaTokenExpire { get; set; } = 300;
+
+    /// <summary>TOTP 签发方名称。Authenticator 中显示的 issuer，默认 NewLife.Cube</summary>
+    [Description("TOTP 签发方名称。Authenticator 中显示的 issuer，默认 NewLife.Cube")]
+    [Category("用户登录")]
+    public String MfaIssuer { get; set; } = "NewLife.Cube";
     #endregion
 
     #region 界面配置

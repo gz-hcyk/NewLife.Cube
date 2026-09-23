@@ -15,6 +15,7 @@
         {
             <li role="presentation" class="@(path.StartsWithIgnoreCase("/Admin/User/Info")?"active":"")"><a href="/Admin/User/Info">基本信息</a></li>
             <li role="presentation" class="@(path.StartsWithIgnoreCase("/Admin/User/ChangePassword")?"active":"")"><a href="/Admin/User/ChangePassword">修改密码</a></li>
+            <li role="presentation" class="@(path.StartsWithIgnoreCase("/Admin/User/Mfa")?"active":"")"><a href="/Admin/User/Mfa">安全设置</a></li>
             <li role="presentation" class="@(path.StartsWithIgnoreCase("/Admin/User/Binds")?"active":"")"><a href="/Admin/User/Binds">第三方授权</a></li>
             <li role="presentation" class="@(path.StartsWithIgnoreCase("/Admin/User/TenantSetting")?"active":"")"><a href="/Admin/User/TenantSetting">租户信息</a></li>
         }

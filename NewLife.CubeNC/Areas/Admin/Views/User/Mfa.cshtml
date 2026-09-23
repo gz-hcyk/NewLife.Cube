@@ -1,0 +1,148 @@
+@model NewLife.Cube.Models.MfaStatusModel
+@{
+    ViewBag.Title = "安全设置";
+    var backups = TempData["BackupCodes"] as String;
+}
+<div class="row">
+    @await Html.PartialAsync("_User_Nav")
+</div>
+<div class="row">
+    <div class="col-md-10">
+        <h4>二步验证（MFA）</h4>
+        <p class="text-muted">
+            全局开关：@(Model.GlobalEnabled ? "已启用" : "未启用")
+            @if (Model.Required) { <span class="text-warning">（强制绑定）</span> }
+        </p>
+        @if (!String.IsNullOrEmpty(ViewBag.StatusMessage as String))
+        {
+            <div class="alert alert-warning">@ViewBag.StatusMessage</div>
+        }
+        @if (!backups.IsNullOrEmpty())
+        {
+            <div class="alert alert-info">
+                <strong>请保存恢复码（仅此一次）：</strong>
+                <div id="once-codes"></div>
+            </div>
+            <script>document.getElementById('once-codes').textContent = @Html.Raw(backups);</script>
+        }
+
+        <table class="table table-bordered">
+            <tr>
+                <th style="width:180px;">身份验证器 TOTP</th>
+                <td>
+                    @(Model.TotpConfirmed ? "已绑定" : "未绑定")
+                    <button type="button" class="btn btn-sm btn-primary" id="btn-totp-start">@(Model.TotpConfirmed ? "重新绑定" : "绑定")</button>
+                    @if (Model.TotpConfirmed)
+                    {
+                        <button type="button" class="btn btn-sm btn-danger" id="btn-totp-unbind">解绑</button>
+                    }
+                </td>
+            </tr>
+            <tr>
+                <th>短信验证码</th>
+                <td>
+                    @(Model.SmsEnabled ? "已启用" : "未启用")
+                    · @Model.MobileMasked
+                    @if (!Model.MobileVerified) { <span class="text-muted">（请先验证手机）</span> }
+                    else
+                    {
+                        <button type="button" class="btn btn-sm btn-default btn-channel" data-channel="sms" data-enable="@(Model.SmsEnabled ? "false" : "true")">
+                            @(Model.SmsEnabled ? "关闭通道" : "启用")
+                        </button>
+                    }
+                </td>
+            </tr>
+            <tr>
+                <th>邮件验证码</th>
+                <td>
+                    @(Model.MailEnabled ? "已启用" : "未启用")
+                    · @Model.MailMasked
+                    @if (!Model.MailVerified) { <span class="text-muted">（请先验证邮箱）</span> }
+                    else
+                    {
+                        <button type="button" class="btn btn-sm btn-default btn-channel" data-channel="mail" data-enable="@(Model.MailEnabled ? "false" : "true")">
+                            @(Model.MailEnabled ? "关闭通道" : "启用")
+                        </button>
+                    }
+                </td>
+            </tr>
+            <tr>
+                <th>恢复码</th>
+                <td>
+                    剩余 @Model.BackupCodeCount 个
+                    <button type="button" class="btn btn-sm btn-default" id="btn-regen">重新生成</button>
+                </td>
+            </tr>
+        </table>
+
+        <div id="totp-panel" style="display:none;max-width:420px;" class="well">
+            <p>使用 Authenticator 扫描二维码或输入密钥，然后填写 6 位码确认。</p>
+            <div class="text-center"><img id="qr-img" style="display:none;max-width:160px;" /></div>
+            <p class="text-center"><code id="secret-text"></code></p>
+            <input id="totp-code" class="form-control" maxlength="6" placeholder="确认验证码" />
+            <button type="button" class="btn btn-primary" id="btn-totp-confirm" style="margin-top:8px;">确认绑定</button>
+            <div id="new-backups" style="margin-top:12px;"></div>
+        </div>
+
+        @if (Model.Enable)
+        {
+            <hr />
+            <h5>关闭 MFA</h5>
+            <div class="form-inline">
+                <select id="disable-method" class="form-control">
+                    <option value="totp">验证器</option>
+                    <option value="password">登录密码</option>
+                    <option value="backup">恢复码</option>
+                </select>
+                <input id="disable-code" class="form-control" placeholder="验证码或密码" />
+                <button type="button" class="btn btn-danger" id="btn-disable">确认关闭</button>
+            </div>
+        }
+    </div>
+</div>
+<script>
+(function () {
+  function post(url, data) {
+    return $.ajax({ url: url, type: 'POST', data: data });
+  }
+  $('#btn-totp-start').on('click', function () {
+    post('@Url.Action("MfaTotpStart")', {}).done(function (res) {
+      var data = res.data || res.Data || res;
+      $('#totp-panel').show();
+      $('#secret-text').text(data.secret || data.Secret);
+      var uri = data.otpAuthUri || data.OtpAuthUri;
+      if (uri) $('#qr-img').attr('src', 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(uri)).show();
+    }).fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
+  });
+  $('#btn-totp-confirm').on('click', function () {
+    post('@Url.Action("MfaTotpConfirm")', { code: $('#totp-code').val() }).done(function (res) {
+      var data = res.data || res.Data || res;
+      var codes = data.backupCodes || data.BackupCodes || [];
+      if (codes.length) $('#new-backups').html('<strong>恢复码：</strong><br/>' + codes.join('<br/>'));
+      alert('绑定成功');
+      location.reload();
+    }).fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
+  });
+  $('.btn-channel').on('click', function () {
+    var $b = $(this);
+    post('@Url.Action("MfaChannel")', { Channel: $b.data('channel'), Enable: $b.data('enable') === true || $b.data('enable') === 'true' })
+      .done(function () { location.reload(); })
+      .fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
+  });
+  $('#btn-regen').on('click', function () {
+    var method = prompt('确认方式：totp / password / backup', 'totp');
+    var code = prompt('请输入验证码或密码');
+    if (!code) return;
+    post('@Url.Action("MfaBackupCodes")', { Method: method, Code: code }).done(function (res) {
+      var codes = res.data || res.Data || [];
+      alert('新恢复码：\n' + codes.join('\n'));
+      location.reload();
+    }).fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
+  });
+  $('#btn-disable').on('click', function () {
+    post('@Url.Action("MfaDisable")', { Method: $('#disable-method').val(), Code: $('#disable-code').val() })
+      .done(function () { location.reload(); })
+      .fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
+  });
+})();
+</script>

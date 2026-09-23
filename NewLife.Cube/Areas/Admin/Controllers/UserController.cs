@@ -31,6 +31,7 @@ public class UserController : EntityController<User, UserModel>
     private readonly ICache _cache;
     private readonly UserService _userService;
     private readonly PasswordService _passwordService;
+    private readonly MfaService _mfaService;
     private readonly ISmsVerifyCode _smsVerifyCode;
 
     static UserController()
@@ -103,10 +104,11 @@ public class UserController : EntityController<User, UserModel>
     /// <param name="passwordService"></param>
     /// <param name="cacheProvider"></param>
     /// <param name="smsVerifyCode"></param>
-    public UserController(UserService userService, PasswordService passwordService, ICacheProvider cacheProvider, ISmsVerifyCode smsVerifyCode = null)
+    public UserController(UserService userService, PasswordService passwordService, MfaService mfaService, ICacheProvider cacheProvider, ISmsVerifyCode smsVerifyCode = null)
     {
         _userService = userService;
         _passwordService = passwordService;
+        _mfaService = mfaService;
         _cache = cacheProvider.Cache;
         _smsVerifyCode = smsVerifyCode;
     }
@@ -249,40 +251,71 @@ public class UserController : EntityController<User, UserModel>
     /// <returns></returns>
     [HttpPost]
     [AllowAnonymous]
-    public ApiResponse<TokenModel> Login(LoginModel model)
+    public IApiResponse Login(LoginModel model)
     {
-
-        var res = new TokenModel();
         if (String.IsNullOrWhiteSpace(model.Username))
-            return res.ToFailApiResponse("用户名不能为空");
+            return new TokenModel().ToFailApiResponse("用户名不能为空");
         if (String.IsNullOrWhiteSpace(model.Password))
-            return res.ToFailApiResponse("密码不能为空");
+            return new TokenModel().ToFailApiResponse("密码不能为空");
 
         try
         {
             ServiceResult<TokenModel> loginResult = _userService.Login(model, HttpContext);
+            if (loginResult != null && loginResult.Code == (Int32)CubeCode.MfaRequired)
+            {
+                var challenge = loginResult.Extra as MfaChallengeModel ?? new MfaChallengeModel();
+                return challenge.ToFailApiResponse(CubeCode.MfaRequired, loginResult.Message);
+            }
+            if (loginResult != null && loginResult.Code == (Int32)CubeCode.MfaBindRequired)
+            {
+                var setup = loginResult.Extra as MfaChallengeModel ?? new MfaChallengeModel();
+                return setup.ToFailApiResponse(CubeCode.MfaBindRequired, loginResult.Message);
+            }
+
+            var res = new TokenModel();
             if (loginResult?.Data == null || loginResult.Data.AccessToken.IsNullOrEmpty())
-                return res.ToFailApiResponse(loginResult?.Message); //登录失败
+                return res.ToFailApiResponse(loginResult?.Message);
 
             res.AccessToken = loginResult.Data.AccessToken;
             res.RefreshToken = loginResult.Data.RefreshToken;
             return res.ToOkApiResponse("登录成功");
-
         }
         catch (Exception ex)
         {
-            return res.ToFailApiResponse(ex.Message);
+            return new TokenModel().ToFailApiResponse(ex.Message);
         }
+    }
 
-        //TODO 地址跳转，应该直接操作Response，而不是返回一个视图。API暂时不需要跳转，由前端处理
-        var returnUrl = GetRequest("r");
-        if (returnUrl.IsNullOrEmpty()) returnUrl = GetRequest("ReturnUrl");
-        var viewModel = GetViewModel(returnUrl);
-        //viewModel.LoginTip = loginResult?.Result;
-        //viewModel.OAuthItems = OAuthConfig.GetVisibles(TenantContext.CurrentId);
-        //return Json(0, null, viewModel);
-        return res.ToFailApiResponse("");
-        ////Response.Redirect(returnUrl,true); 
+    /// <summary>校验 MFA 完成登录</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public ApiResponse<TokenModel> VerifyMfa(VerifyMfaModel model)
+    {
+        try
+        {
+            var result = _userService.VerifyMfa(model, HttpContext);
+            return (result.Data ?? new TokenModel()).ToOkApiResponse("登录成功");
+        }
+        catch (Exception ex)
+        {
+            return new TokenModel().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>发送 MFA 通道验证码</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public async Task<ApiResponse<String>> SendMfaCode(SendMfaCodeModel model)
+    {
+        try
+        {
+            await _mfaService.SendChallengeCode(model, HttpContext.GetUserHost());
+            return "".ToOkApiResponse("验证码已发送");
+        }
+        catch (Exception ex)
+        {
+            return "".ToFailApiResponse(ex.Message);
+        }
     }
 
     /// <summary>刷新令牌</summary>

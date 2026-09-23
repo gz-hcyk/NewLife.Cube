@@ -1,0 +1,79 @@
+@model NewLife.Cube.Models.MfaChallengeModel
+@using NewLife.Common
+@{
+    Layout = null;
+    ViewBag.Title = "绑定二步验证";
+    var res = CubeSetting.Current.ResourceUrl;
+    if (res.IsNullOrEmpty()) res = "/Content";
+    var returnUrl = ViewBag.ReturnUrl as String;
+}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@ViewBag.Title - @SysConfig.Current.DisplayName</title>
+    <link href="@res/bootstrap/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="@res/Cube.css" rel="stylesheet" />
+    <style>
+        body { background: linear-gradient(160deg, #1b3a5f 0%, #2a5f8f 45%, #3d7ea6 100%); min-height: 100vh; }
+        .mfa-card { max-width: 440px; margin: 48px auto; background: #fff; border-radius: 12px; padding: 28px 24px; box-shadow: 0 16px 40px rgba(0,0,0,.18); }
+        .secret { font-family: Consolas, monospace; background: #f4f7fa; padding: 8px; border-radius: 6px; text-align: center; letter-spacing: 1px; word-break: break-all; }
+        .qr { text-align: center; margin: 12px 0; }
+        .qr img { max-width: 180px; }
+        .codes code { display: inline-block; width: 46%; margin: 4px 2%; background: #f4f7fa; padding: 6px; text-align: center; border-radius: 4px; }
+    </style>
+</head>
+<body>
+<div class="mfa-card">
+    <h2 style="text-align:center;font-size:20px;">须先绑定二步验证</h2>
+    <p style="color:#5c6b76;font-size:13px;text-align:center;">系统已开启强制 MFA。请使用 Authenticator 扫描二维码并确认。</p>
+    <div id="setup-area">
+        <div class="qr"><img id="qr-img" alt="QR" style="display:none" /></div>
+        <div class="secret" id="secret-text">加载中…</div>
+        <div class="form-group" style="margin-top:12px;">
+            <input id="confirm-code" class="form-control" maxlength="6" placeholder="App 中的 6 位验证码" />
+        </div>
+        <button type="button" class="btn btn-primary btn-block" id="btn-confirm" style="width:100%;margin-top:12px;">确认绑定并登录</button>
+    </div>
+    <div id="backup-area" style="display:none;">
+        <p>请妥善保存以下恢复码（仅显示一次）：</p>
+        <div id="backup-list" class="codes"></div>
+        <a class="btn btn-primary btn-block" href="@Url.Action("Index", "Index")" style="width:100%;margin-top:12px;">进入系统</a>
+    </div>
+    <a class="btn btn-link btn-block" href="@Url.Action("Login", "User")" style="width:100%;">返回登录</a>
+</div>
+<script src="@res/jquery/jquery.min.js"></script>
+<script>
+(function () {
+  var token = '@Model.MfaToken';
+  $.post('@Url.Action("MfaTotpStart", "User")', { mfaToken: token }).done(function (res) {
+    var data = res.data || res.Data || res;
+    $('#secret-text').text(data.secret || data.Secret);
+    var uri = data.otpAuthUri || data.OtpAuthUri;
+    if (uri) {
+      $('#qr-img').attr('src', 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(uri)).show();
+    }
+  }).fail(function (xhr) {
+    $('#secret-text').text((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '加载失败');
+  });
+  $('#btn-confirm').on('click', function () {
+    $.post('@Url.Action("MfaTotpConfirm", "User")', { code: $('#confirm-code').val(), mfaToken: token, r: '@returnUrl' })
+      .done(function (res) {
+        var data = res.data || res.Data || res;
+        var codes = data.backupCodes || data.BackupCodes || [];
+        if (codes.length) {
+          $('#setup-area').hide();
+          $('#backup-area').show();
+          var html = codes.map(function (c) { return '<code>' + c + '</code>'; }).join('');
+          $('#backup-list').html(html);
+        } else {
+          location.href = '@Url.Action("Index", "Index")';
+        }
+      })
+      .fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '绑定失败'); });
+  });
+})();
+</script>
+</body>
+</html>

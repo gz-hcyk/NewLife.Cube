@@ -625,5 +625,27 @@
         <Index Columns="Channel,Target,Id" />
       </Indexes>
     </Table>
+    <Table Name="UserMfa" Description="用户MFA。二步验证绑定与恢复码">
+      <Columns>
+        <Column Name="Id" DataType="Int32" Identity="True" PrimaryKey="True" Description="编号" />
+        <Column Name="UserId" DataType="Int32" Description="用户" />
+        <Column Name="Enable" DataType="Boolean" Description="启用。用户是否启用二步验证" />
+        <Column Name="TotpSecret" DataType="String" Length="200" Description="TOTP密钥。加密存储的Base32密钥" />
+        <Column Name="TotpConfirmed" DataType="Boolean" Description="TOTP已确认。完成首码校验后为true" />
+        <Column Name="SmsEnabled" DataType="Boolean" Description="短信通道。允许用短信作第二因子" />
+        <Column Name="MailEnabled" DataType="Boolean" Description="邮件通道。允许用邮件作第二因子" />
+        <Column Name="BackupCodes" DataType="String" Length="2000" Description="恢复码。哈希后的JSON数组" />
+        <Column Name="CreateUserID" DataType="Int32" Description="创建用户" Category="扩展" />
+        <Column Name="CreateIP" DataType="String" Description="创建地址" Category="扩展" />
+        <Column Name="CreateTime" DataType="DateTime" Description="创建时间" Category="扩展" />
+        <Column Name="UpdateUserID" DataType="Int32" Description="更新用户" Category="扩展" />
+        <Column Name="UpdateIP" DataType="String" Description="更新地址" Category="扩展" />
+        <Column Name="UpdateTime" DataType="DateTime" Description="更新时间" Category="扩展" />
+        <Column Name="Remark" DataType="String" Length="500" Description="备注" Category="扩展" />
+      </Columns>
+      <Indexes>
+        <Index Columns="UserId" Unique="True" />
+      </Indexes>
+    </Table>
   </Tables>
 </EntityModel>

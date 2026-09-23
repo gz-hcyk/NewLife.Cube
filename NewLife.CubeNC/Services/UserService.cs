@@ -23,7 +23,7 @@ namespace NewLife.Cube.Services;
 /// <param name="passwordService">密码服务</param>
 /// <param name="cacheProvider">缓存提供者</param>
 /// <param name="tracer">追踪器</param>
-public class UserService(SmsService smsService, MailService mailService, PasswordService passwordService, ICacheProvider cacheProvider, ITracer tracer)
+public class UserService(SmsService smsService, MailService mailService, PasswordService passwordService, MfaService mfaService, ICacheProvider cacheProvider, ITracer tracer)
 {
     #region 缓存Key前缀常量
     /// <summary>密码登录用户名错误次数缓存前缀</summary>
@@ -176,13 +176,73 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             // 移除秘钥私钥信息，避免重放
             if (!loginModel.Pkey.IsNullOrEmpty()) _cache.Remove(loginModel.Pkey);
 
-            return CompleteLogin(provider.Current, httpContext, remember, "密码登录", username, ip);
+            var user = provider.Current as User;
+            var (needChallenge, needBind, _) = mfaService.EvaluateAfterPassword(user);
+            if (needBind)
+            {
+                // 清除 ManageProvider.Login 已写入的会话；签发仅用于绑定的 setupToken
+                provider.Logout();
+                var setup = mfaService.CreateSetupSession(user, remember);
+                return new ServiceResult<TokenModel>
+                {
+                    IsSuccess = false,
+                    Code = (Int32)CubeCode.MfaBindRequired,
+                    Message = "须先绑定二步验证",
+                    Extra = setup,
+                };
+            }
+            if (needChallenge)
+            {
+                provider.Logout();
+                var challenge = mfaService.CreateChallenge(user, remember);
+                return new ServiceResult<TokenModel>
+                {
+                    IsSuccess = false,
+                    Code = (Int32)CubeCode.MfaRequired,
+                    Message = "需要二步验证",
+                    Extra = challenge,
+                };
+            }
+
+            return CompleteLogin(user, httpContext, remember, "密码登录", username, ip);
         }
         catch (Exception ex)
         {
             HandleLoginError(ex, "登录", username, ip, key, ipKey, errors, ipErrors, set.LoginForbiddenTime);
             throw;
         }
+    }
+
+    /// <summary>完成 MFA 挑战并登录</summary>
+    public ServiceResult<TokenModel> VerifyMfa(VerifyMfaModel model, HttpContext httpContext)
+    {
+        var ip = httpContext.GetUserHost();
+        try
+        {
+            var (user, remember) = mfaService.VerifyChallenge(model, ip);
+            // 建立会话主体
+            ManageProvider.Provider.Current = user;
+            return CompleteLogin(user, httpContext, remember, "MFA登录", user.Name, ip);
+        }
+        catch (Exception ex)
+        {
+            LogProvider.Provider.WriteLog(typeof(User), "MFA登录", false, ex.Message, 0, model?.MfaToken, ip);
+            throw;
+        }
+    }
+
+    /// <summary>强制绑定完成后，用 setupToken 完成登录</summary>
+    public ServiceResult<TokenModel> CompleteSetupLogin(String mfaToken, HttpContext httpContext)
+    {
+        var (user, state) = mfaService.ResolveTokenUser(mfaToken, requireSetup: true);
+        var mfa = UserMfa.FindByUserId(user.ID);
+        if (mfa == null || !mfa.IsActive)
+            throw new InvalidOperationException("请先完成二步验证绑定");
+
+        mfaService.ConsumeChallenge(mfaToken);
+        ManageProvider.Provider.Current = user;
+        var ip = httpContext.GetUserHost();
+        return CompleteLogin(user, httpContext, state.Remember, "MFA绑定后登录", user.Name, ip);
     }
 
     /// <summary>手机验证码登录</summary>

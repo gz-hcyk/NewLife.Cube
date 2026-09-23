@@ -39,4 +39,12 @@ public enum CubeCode
     /// <remarks>程序异常</remarks>
     [Description("内部错误")]
     Exception = -5,
+
+    /// <summary>需要二步验证。密码已通过，须提交 MFA 挑战码</summary>
+    [Description("需要二步验证")]
+    MfaRequired = 1002,
+
+    /// <summary>须先绑定 MFA。强制策略下用户尚未绑定第二因子</summary>
+    [Description("须先绑定MFA")]
+    MfaBindRequired = 1003,
 }
