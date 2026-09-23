@@ -530,10 +530,9 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>MFA 挑战页</summary>
     [AllowAnonymous]
     [HttpGet]
-    public ActionResult MfaChallenge(String r = null)
+    public ActionResult MfaChallenge(String mfaToken = null, String r = null)
     {
-        var json = TempData["MfaChallenge"] as String;
-        var model = json.IsNullOrEmpty() ? null : json.ToJsonEntity<MfaChallengeModel>();
+        var model = ResolveChallengeViewModel(mfaToken, TempData["MfaChallenge"] as String, setupOnly: false);
         if (model == null || model.MfaToken.IsNullOrEmpty())
             return RedirectToAction(nameof(Login), new { r });
 
@@ -545,16 +544,40 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>强制绑定页</summary>
     [AllowAnonymous]
     [HttpGet]
-    public ActionResult MfaSetup(String r = null)
+    public ActionResult MfaSetup(String mfaToken = null, String r = null)
     {
-        var json = TempData["MfaSetup"] as String;
-        var model = json.IsNullOrEmpty() ? null : json.ToJsonEntity<MfaChallengeModel>();
+        var model = ResolveChallengeViewModel(mfaToken, TempData["MfaSetup"] as String, setupOnly: true);
         if (model == null || model.MfaToken.IsNullOrEmpty())
             return RedirectToAction(nameof(Login), new { r });
 
         ViewBag.ReturnUrl = r;
         ViewBag.Title = "绑定二步验证";
         return View(model);
+    }
+
+    private MfaChallengeModel ResolveChallengeViewModel(String mfaToken, String tempJson, Boolean setupOnly)
+    {
+        if (!tempJson.IsNullOrEmpty())
+        {
+            var fromTemp = tempJson.ToJsonEntity<MfaChallengeModel>();
+            if (fromTemp != null && !fromTemp.MfaToken.IsNullOrEmpty()) return fromTemp;
+        }
+
+        if (mfaToken.IsNullOrEmpty()) return null;
+        var state = _mfaService.GetChallenge(mfaToken);
+        if (state == null) return null;
+        if (setupOnly && !state.IsSetup) return null;
+        if (!setupOnly && state.IsSetup) return null;
+
+        var user = XCode.Membership.User.FindByID(state.UserId);
+        var mfa = UserMfa.FindByUserId(state.UserId);
+        return new MfaChallengeModel
+        {
+            MfaToken = mfaToken,
+            ExpireIn = CubeSetting.Current.MfaTokenExpire,
+            Methods = setupOnly ? [] : _mfaService.GetMethods(mfa, user),
+            DisplayName = user == null ? null : (user.DisplayName.IsNullOrEmpty() ? user.Name : user.DisplayName),
+        };
     }
 
     /// <summary>校验 MFA 并完成登录</summary>

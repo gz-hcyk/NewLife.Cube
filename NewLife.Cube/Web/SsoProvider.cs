@@ -1,4 +1,6 @@
-﻿using NewLife.Cube.Entity;
+﻿using System.Web;
+using NewLife.Cube.Entity;
+using NewLife.Cube.Services;
 using NewLife.Log;
 using NewLife.Model;
 using NewLife.Reflection;
@@ -190,11 +192,18 @@ public class SsoProvider
         // 用户角色可能有更新，需要清空扩展属性，避免Roles保留脏数据，导致用户首次访问显示无权限
         (user as IEntity).Extends.Clear();
 
+        if (!user.Enable) throw new InvalidOperationException($"用户[{user}]已禁用！");
+
+        // 绑定已有会话账号时不再二次挑战；SSO 新登录须过 MFA（与密码登录同一策略）
+        if (!forceBind && user is User ssoUser)
+        {
+            var mfaUrl = TryPrepareMfaRedirect(context, ssoUser, client.Name);
+            if (!mfaUrl.IsNullOrEmpty()) return mfaUrl;
+        }
+
         // 写日志
         var log = LogProvider.Provider;
         log?.WriteLog(typeof(User), "SSO登录", true, $"[{user}]从[{client.Name}]的[{client.UserName ?? client.NickName}]登录", user.ID, user + "");
-
-        if (!user.Enable) throw new InvalidOperationException($"用户[{user}]已禁用！");
 
         // 登录成功，保存当前用户
         if (prv is ManageProvider2 prv2) user = prv2.CheckAgent(user);
@@ -210,6 +219,32 @@ public class SsoProvider
         }
 
         return SuccessUrl;
+    }
+
+    /// <summary>SSO 登录插入 MFA 门闸。需要挑战/绑定时返回跳转地址，否则返回 null</summary>
+    protected virtual String TryPrepareMfaRedirect(IServiceProvider context, User user, String clientName)
+    {
+        var mfaService = ModelExtension.GetService<MfaService>(context);
+        if (mfaService == null) return null;
+
+        var (needChallenge, needBind, _) = mfaService.EvaluateAfterLogin(user);
+        if (!needChallenge && !needBind) return null;
+
+        // 确保不会带着未过 MFA 的会话离开
+        var prv = Provider ?? ManageProvider.Provider;
+        if (prv.Current?.ID == user.ID) prv.Logout();
+
+        LogProvider.Provider?.WriteLog(typeof(User), "SSO登录", true,
+            $"[{user}]从[{clientName}]认证成功，等待二步验证 needBind={needBind}", user.ID, user + "");
+
+        if (needBind)
+        {
+            var setup = mfaService.CreateSetupSession(user, false);
+            return $"/Admin/User/MfaSetup?mfaToken={HttpUtility.UrlEncode(setup.MfaToken)}";
+        }
+
+        var challenge = mfaService.CreateChallenge(user, false);
+        return $"/Admin/User/MfaChallenge?mfaToken={HttpUtility.UrlEncode(challenge.MfaToken)}";
     }
 
     /// <summary>填充用户，登录成功并获取用户信息之后</summary>

@@ -29,8 +29,14 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
 
     #region 判定
     /// <summary>密码登录后是否需要 MFA 挑战。needBind 表示强制绑定但未绑定</summary>
-    public (Boolean needChallenge, Boolean needBind, UserMfa mfa) EvaluateAfterPassword(User user)
+    public (Boolean needChallenge, Boolean needBind, UserMfa mfa) EvaluateAfterPassword(User user) =>
+        EvaluateAfterLogin(user);
+
+    /// <summary>任意登录入口（密码/SSO 等）统一 MFA 判定</summary>
+    public (Boolean needChallenge, Boolean needBind, UserMfa mfa) EvaluateAfterLogin(User user)
     {
+        if (user == null) return (false, false, null);
+
         var set = CubeSetting.Current;
         if (!set.EnableMfa) return (false, false, null);
 

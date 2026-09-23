@@ -173,4 +173,24 @@ public class MfaServiceTests
 
         Assert.Throws<InvalidOperationException>(() => svc.StartTotpSetup(user));
     }
+
+    [Fact]
+    [DisplayName("EvaluateAfterLogin_SSO已绑定用户_需要挑战")]
+    public void EvaluateAfterLogin_SsoBoundUser_NeedsChallenge()
+    {
+        CubeSetting.Current.EnableMfa = true;
+        var svc = CreateService();
+        var user = new XCode.Membership.User
+        {
+            Name = "mfa_sso_" + Guid.NewGuid().ToString("N")[..8],
+            Enable = true,
+        };
+        user.Insert();
+        var setup = svc.StartTotpSetup(user);
+        svc.ConfirmTotpSetup(user, Totp.ComputeCode(setup.Secret), "127.0.0.1");
+
+        var (needChallenge, needBind, _) = svc.EvaluateAfterLogin(user);
+        Assert.True(needChallenge);
+        Assert.False(needBind);
+    }
 }
