@@ -46,11 +46,18 @@
     </div>
     <a class="btn btn-link btn-block" href="@Url.Action("Login", "User")" style="width:100%;">返回登录</a>
 </div>
+@Html.AntiForgeryToken()
 <script src="@res/jquery/jquery.min.js"></script>
 <script>
 (function () {
-  var token = '@Model.MfaToken';
-  $.post('@Url.Action("MfaTotpStart", "User")', { mfaToken: token }).done(function (res) {
+  var token = @Html.Raw(JsonSerializer.Serialize(Model?.MfaToken ?? ""));
+  var aft = $('input[name="__RequestVerificationToken"]').val();
+  function post(url, data) {
+    data = data || {};
+    data.__RequestVerificationToken = aft;
+    return $.post(url, data);
+  }
+  post('@Url.Action("MfaTotpStart", "User")', { mfaToken: token }).done(function (res) {
     var data = res.data || res.Data || res;
     $('#secret-text').text(data.secret || data.Secret);
     $('#otpauth-text').text(data.otpAuthUri || data.OtpAuthUri || '');
@@ -58,15 +65,20 @@
     $('#secret-text').text((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '加载失败');
   });
   $('#btn-confirm').on('click', function () {
-    $.post('@Url.Action("MfaTotpConfirm", "User")', { code: $('#confirm-code').val(), mfaToken: token, r: @Html.Raw(returnUrlJson) })
+    post('@Url.Action("MfaTotpConfirm", "User")', { code: $('#confirm-code').val(), mfaToken: token, r: @Html.Raw(returnUrlJson) })
       .done(function (res) {
         var data = res.data || res.Data || res;
         var codes = data.backupCodes || data.BackupCodes || [];
         if (codes.length) {
           $('#setup-area').hide();
           $('#backup-area').show();
-          var html = codes.map(function (c) { return '<code>' + c + '</code>'; }).join('');
-          $('#backup-list').html(html);
+          var list = document.getElementById('backup-list');
+          list.textContent = '';
+          codes.forEach(function (c) {
+            var el = document.createElement('code');
+            el.textContent = c;
+            list.appendChild(el);
+          });
         } else {
           location.href = '@Url.Action("Index", "Index")';
         }

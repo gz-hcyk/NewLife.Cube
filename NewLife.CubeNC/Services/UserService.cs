@@ -5,6 +5,7 @@ using NewLife.Cube.Common;
 using NewLife.Cube.Entity;
 using NewLife.Cube.Enums;
 using NewLife.Cube.Models;
+using NewLife.Cube.Security;
 using NewLife.Cube.Web;
 using NewLife.Log;
 using NewLife.Model;
@@ -435,6 +436,14 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
         if (set.SessionTimeout > 0 && !remember)
             expire = TimeSpan.FromSeconds(set.SessionTimeout);
         provider.SaveCookie(user, expire, httpContext);
+
+        // 本登录已满足 MFA 策略：写入会话戳，开启 MFA 后存量未过第二因子的会话将被踢出
+        if (set.EnableMfa)
+        {
+            var stampExpire = expire > TimeSpan.Zero ? expire : TimeSpan.FromSeconds(set.SessionTimeout > 0 ? set.SessionTimeout : 7200);
+            MfaSession.WriteSatisfied(httpContext, user.ID, stampExpire);
+        }
+        MfaSession.ClearChallengeToken(httpContext);
 
         // 记录在线统计
         var stat = UserStat.GetOrAdd(DateTime.Today);

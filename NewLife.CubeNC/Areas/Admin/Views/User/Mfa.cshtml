@@ -1,11 +1,14 @@
 @model NewLife.Cube.Models.MfaStatusModel
+@using System.Text.Json
 @{
     ViewBag.Title = "安全设置";
     var backups = TempData["BackupCodes"] as String;
+    var backupsJson = String.IsNullOrEmpty(backups) ? "[]" : backups;
 }
 <div class="row">
     @await Html.PartialAsync("_User_Nav")
 </div>
+@Html.AntiForgeryToken()
 <div class="row">
     <div class="col-md-10">
         <h4>二步验证（MFA）</h4>
@@ -17,13 +20,12 @@
         {
             <div class="alert alert-warning">@ViewBag.StatusMessage</div>
         }
-        @if (!backups.IsNullOrEmpty())
+        @if (!String.IsNullOrEmpty(backups))
         {
             <div class="alert alert-info">
                 <strong>请保存恢复码（仅此一次）：</strong>
                 <div id="once-codes"></div>
             </div>
-            <script>document.getElementById('once-codes').textContent = @Html.Raw(backups);</script>
         }
 
         <table class="table table-bordered">
@@ -32,10 +34,6 @@
                 <td>
                     @(Model.TotpConfirmed ? "已绑定" : "未绑定")
                     <button type="button" class="btn btn-sm btn-primary" id="btn-totp-start">@(Model.TotpConfirmed ? "重新绑定" : "绑定")</button>
-                    @if (Model.TotpConfirmed)
-                    {
-                        <button type="button" class="btn btn-sm btn-danger" id="btn-totp-unbind">解绑</button>
-                    }
                 </td>
             </tr>
             <tr>
@@ -113,8 +111,22 @@
 </div>
 <script>
 (function () {
+  function antiforgery() {
+    return $('input[name="__RequestVerificationToken"]').val();
+  }
   function post(url, data) {
+    data = data || {};
+    data.__RequestVerificationToken = antiforgery();
     return $.ajax({ url: url, type: 'POST', data: data });
+  }
+  @if (!String.IsNullOrEmpty(backups))
+  {
+    <text>
+  try {
+    var once = @Html.Raw(backupsJson);
+    if (Array.isArray(once)) document.getElementById('once-codes').textContent = once.join('  ');
+  } catch (e) {}
+    </text>
   }
   $('#btn-totp-start').on('click', function () {
     var data = {};
@@ -135,16 +147,38 @@
     post('@Url.Action("MfaTotpConfirm")', { code: $('#totp-code').val() }).done(function (res) {
       var data = res.data || res.Data || res;
       var codes = data.backupCodes || data.BackupCodes || [];
-      if (codes.length) $('#new-backups').html('<strong>恢复码：</strong><br/>' + codes.join('<br/>'));
+      if (codes.length) {
+        var box = document.getElementById('new-backups');
+        box.textContent = '';
+        var strong = document.createElement('strong');
+        strong.textContent = '恢复码：';
+        box.appendChild(strong);
+        box.appendChild(document.createElement('br'));
+        codes.forEach(function (c) {
+          box.appendChild(document.createTextNode(c));
+          box.appendChild(document.createElement('br'));
+        });
+      }
       alert('绑定成功');
       location.reload();
     }).fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
   });
   $('.btn-channel').on('click', function () {
     var $b = $(this);
-    post('@Url.Action("MfaChannel")', { Channel: $b.data('channel'), Enable: $b.data('enable') === true || $b.data('enable') === 'true' })
-      .done(function () { location.reload(); })
-      .fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
+    var method = prompt('确认方式：totp / password / backup（默认 password）', 'password');
+    if (method === null) return;
+    var code = prompt('请输入验证码或密码以确认通道变更');
+    if (!code) return;
+    post('@Url.Action("MfaChannel")', {
+      Channel: $b.data('channel'),
+      Enable: $b.data('enable') === true || $b.data('enable') === 'true',
+      Method: method || 'password',
+      Code: code
+    }).done(function (res) {
+      var codes = res.data || res.Data;
+      if (codes && codes.length) alert('请保存新恢复码（仅此一次）：\n' + codes.join('\n'));
+      location.reload();
+    }).fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
   });
   $('#btn-regen').on('click', function () {
     var method = prompt('确认方式：totp / password / backup', 'totp');

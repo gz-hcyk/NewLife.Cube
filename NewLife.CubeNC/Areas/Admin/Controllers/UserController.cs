@@ -11,6 +11,7 @@ using NewLife.Cube.Areas.Admin.Models;
 using NewLife.Cube.Common;
 using NewLife.Cube.Entity;
 using NewLife.Cube.Models;
+using NewLife.Cube.Security;
 using NewLife.Cube.Services;
 using NewLife.Cube.ViewModels;
 using NewLife.Data;
@@ -419,6 +420,7 @@ public class UserController : EntityController<User, UserModel>
                     if (IsJsonRequest)
                         return Json((Int32)CubeCode.MfaRequired, result.Message, challenge);
 
+                    MfaSession.WriteChallengeToken(HttpContext, challenge.MfaToken, challenge.ExpireIn);
                     TempData["MfaChallenge"] = challenge.ToJson();
                     return RedirectToAction(nameof(MfaChallenge), new { r = returnUrl });
                 }
@@ -427,6 +429,7 @@ public class UserController : EntityController<User, UserModel>
                     if (IsJsonRequest)
                         return Json((Int32)CubeCode.MfaBindRequired, result.Message, setup);
 
+                    MfaSession.WriteChallengeToken(HttpContext, setup.MfaToken, setup.ExpireIn);
                     TempData["MfaSetup"] = setup.ToJson();
                     return RedirectToAction(nameof(MfaSetup), new { r = returnUrl });
                 }
@@ -532,6 +535,7 @@ public class UserController : EntityController<User, UserModel>
     [HttpGet]
     public ActionResult MfaChallenge(String mfaToken = null, String r = null)
     {
+        mfaToken = MfaSession.ReadChallengeToken(HttpContext, mfaToken);
         var model = ResolveChallengeViewModel(mfaToken, TempData["MfaChallenge"] as String, setupOnly: false);
         if (model == null || model.MfaToken.IsNullOrEmpty())
             return RedirectToAction(nameof(Login), new { r });
@@ -546,6 +550,7 @@ public class UserController : EntityController<User, UserModel>
     [HttpGet]
     public ActionResult MfaSetup(String mfaToken = null, String r = null)
     {
+        mfaToken = MfaSession.ReadChallengeToken(HttpContext, mfaToken);
         var model = ResolveChallengeViewModel(mfaToken, TempData["MfaSetup"] as String, setupOnly: true);
         if (model == null || model.MfaToken.IsNullOrEmpty())
             return RedirectToAction(nameof(Login), new { r });
@@ -583,11 +588,15 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>校验 MFA 并完成登录</summary>
     [AllowAnonymous]
     [HttpPost]
+    [ValidateAntiForgeryToken]
     public ActionResult VerifyMfa(VerifyMfaModel model, String r = null)
     {
         try
         {
+            if (model != null)
+                model.MfaToken = MfaSession.ReadChallengeToken(HttpContext, model.MfaToken);
             var result = _userService.VerifyMfa(model, HttpContext);
+            MfaSession.ClearChallengeToken(HttpContext);
             if (IsJsonRequest)
                 return Json(0, "ok", new { Token = result.Data?.AccessToken, result.Data?.RefreshToken, result.Data?.ExpireIn });
 
@@ -615,6 +624,7 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>发送 MFA 短信/邮件验证码</summary>
     [AllowAnonymous]
     [HttpPost]
+    [ValidateAntiForgeryToken]
     public async Task<ActionResult> SendMfaCode(SendMfaCodeModel model)
     {
         try
@@ -641,10 +651,12 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>开始绑定 TOTP</summary>
     [HttpPost]
     [AllowAnonymous]
+    [ValidateAntiForgeryToken]
     public ActionResult MfaTotpStart(String mfaToken = null, String confirmMethod = null, String confirmCode = null)
     {
         try
         {
+            mfaToken = MfaSession.ReadChallengeToken(HttpContext, mfaToken);
             var user = ResolveMfaUser(mfaToken);
             var setup = _mfaService.StartTotpSetup(user, confirmMethod, confirmCode);
             return Json(0, "ok", setup);
@@ -658,10 +670,12 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>确认绑定 TOTP</summary>
     [HttpPost]
     [AllowAnonymous]
+    [ValidateAntiForgeryToken]
     public ActionResult MfaTotpConfirm(String code, String mfaToken = null, String r = null)
     {
         try
         {
+            mfaToken = MfaSession.ReadChallengeToken(HttpContext, mfaToken);
             var user = ResolveMfaUser(mfaToken);
             var backups = _mfaService.ConfirmTotpSetup(user, code, HttpContext.GetUserHost());
 
@@ -672,6 +686,7 @@ public class UserController : EntityController<User, UserModel>
                 if (state?.IsSetup == true)
                 {
                     var login = _userService.CompleteSetupLogin(mfaToken, HttpContext);
+                    MfaSession.ClearChallengeToken(HttpContext);
                     if (IsJsonRequest)
                         return Json(0, "ok", new { Token = login.Data?.AccessToken, BackupCodes = backups });
                     TempData["BackupCodes"] = backups.ToJson();
@@ -695,13 +710,14 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>启停短信/邮件通道</summary>
     [EntityAuthorize]
     [HttpPost]
+    [ValidateAntiForgeryToken]
     public ActionResult MfaChannel(MfaChannelModel model)
     {
         try
         {
             var user = ManageProvider.User as XCode.Membership.User;
-            _mfaService.SetChannel(user, model.Channel, model.Enable, HttpContext.GetUserHost());
-            return Json(0, "ok");
+            var codes = _mfaService.SetChannel(user, model.Channel, model.Enable, model.Method, model.Code, HttpContext.GetUserHost());
+            return Json(0, "ok", codes);
         }
         catch (Exception ex)
         {
@@ -712,6 +728,7 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>关闭 MFA</summary>
     [EntityAuthorize]
     [HttpPost]
+    [ValidateAntiForgeryToken]
     public ActionResult MfaDisable(MfaConfirmModel model)
     {
         try
@@ -729,6 +746,7 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>重新生成恢复码</summary>
     [EntityAuthorize]
     [HttpPost]
+    [ValidateAntiForgeryToken]
     public ActionResult MfaBackupCodes(MfaConfirmModel model)
     {
         try
@@ -745,6 +763,7 @@ public class UserController : EntityController<User, UserModel>
 
     private XCode.Membership.User ResolveMfaUser(String mfaToken)
     {
+        mfaToken = MfaSession.ReadChallengeToken(HttpContext, mfaToken);
         if (!mfaToken.IsNullOrEmpty())
         {
             // 仅允许强制绑定 setupToken，禁止用登录挑战令牌改绑 TOTP

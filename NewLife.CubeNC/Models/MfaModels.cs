@@ -99,6 +99,12 @@ public class MfaChannelModel
 
     /// <summary>是否启用</summary>
     public Boolean Enable { get; set; }
+
+    /// <summary>确认方式：totp / password / backup / sms / mail</summary>
+    public String Method { get; set; }
+
+    /// <summary>确认码或密码</summary>
+    public String Code { get; set; }
 }
 
 /// <summary>关闭 MFA / 敏感操作确认</summary>

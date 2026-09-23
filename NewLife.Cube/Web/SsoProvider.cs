@@ -1,5 +1,7 @@
 ﻿using System.Web;
+using Microsoft.AspNetCore.Http;
 using NewLife.Cube.Entity;
+using NewLife.Cube.Security;
 using NewLife.Cube.Services;
 using NewLife.Log;
 using NewLife.Model;
@@ -216,6 +218,8 @@ public class SsoProvider
         {
             var expire = TimeSpan.FromSeconds(set.SessionTimeout);
             prv.SaveCookie(user, expire, httpContext);
+            if (set.EnableMfa)
+                MfaSession.WriteSatisfied(httpContext, user.ID, expire);
         }
 
         return SuccessUrl;
@@ -237,14 +241,19 @@ public class SsoProvider
         LogProvider.Provider?.WriteLog(typeof(User), "SSO登录", true,
             $"[{user}]从[{clientName}]认证成功，等待二步验证 needBind={needBind}", user.ID, user + "");
 
+        var httpContext = ModelExtension.GetService<IHttpContextAccessor>(context)?.HttpContext;
+        var expire = CubeSetting.Current.MfaTokenExpire > 0 ? CubeSetting.Current.MfaTokenExpire : 300;
+
         if (needBind)
         {
             var setup = mfaService.CreateSetupSession(user, false);
-            return $"/Admin/User/MfaSetup?mfaToken={HttpUtility.UrlEncode(setup.MfaToken)}";
+            MfaSession.WriteChallengeToken(httpContext, setup.MfaToken, expire);
+            return "/Admin/User/MfaSetup";
         }
 
         var challenge = mfaService.CreateChallenge(user, false);
-        return $"/Admin/User/MfaChallenge?mfaToken={HttpUtility.UrlEncode(challenge.MfaToken)}";
+        MfaSession.WriteChallengeToken(httpContext, challenge.MfaToken, expire);
+        return "/Admin/User/MfaChallenge";
     }
 
     /// <summary>填充用户，登录成功并获取用户信息之后</summary>

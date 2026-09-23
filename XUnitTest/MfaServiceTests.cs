@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using NewLife.Caching;
@@ -8,7 +9,9 @@ using NewLife.Cube.Models;
 using NewLife.Cube.Security;
 using NewLife.Cube.Services;
 using NewLife.Log;
+using NewLife.Serialization;
 using XCode.DataAccessLayer;
+using XCode.Membership;
 using Xunit;
 
 namespace XUnitTest;
@@ -226,5 +229,64 @@ public class MfaServiceTests
         var (c2, b2, _) = svc.EvaluateAfterPassword(user);
         Assert.Equal(needChallenge, c2);
         Assert.Equal(needBind, b2);
+    }
+
+    [Fact]
+    [DisplayName("ST-通道启停须二次确认")]
+    public void SetChannel_RequiresConfirm()
+    {
+        CubeSetting.Current.EnableMfa = true;
+        var svc = CreateService();
+        var user = new XCode.Membership.User
+        {
+            Name = "mfa_ch_" + Guid.NewGuid().ToString("N")[..8],
+            Enable = true,
+            Mobile = "13900139000",
+            MobileVerified = true,
+            Password = "Passw0rd!",
+        };
+        user.Insert();
+
+        Assert.ThrowsAny<Exception>(() => svc.SetChannel(user, "sms", true, null, null, "127.0.0.1"));
+        Assert.ThrowsAny<Exception>(() => svc.SetChannel(user, "sms", true, "password", "wrong", "127.0.0.1"));
+    }
+
+    [Fact]
+    [DisplayName("ST-恢复码v2加盐哈希可校验且一次性消费")]
+    public void BackupCode_V2SaltedHash_ConsumesOnce()
+    {
+        CubeSetting.Current.EnableMfa = true;
+        var svc = CreateService();
+        var user = new XCode.Membership.User
+        {
+            Name = "mfa_bk_" + Guid.NewGuid().ToString("N")[..8],
+            Enable = true,
+        };
+        user.Insert();
+        var setup = svc.StartTotpSetup(user);
+        var codes = svc.ConfirmTotpSetup(user, Totp.ComputeCode(setup.Secret), "127.0.0.1");
+        Assert.Equal(8, codes.Length);
+        Assert.Contains('-', codes[0]);
+        Assert.True(codes[0].Replace("-", "").Length >= 16);
+
+        var mfa = UserMfa.FindByUserId(user.ID);
+        Assert.StartsWith("v2:", mfa.BackupCodes.ToJsonEntity<List<String>>()[0]);
+
+        var challenge = svc.CreateChallenge(user, false);
+        var (verified, _) = svc.VerifyChallenge(new VerifyMfaModel
+        {
+            MfaToken = challenge.MfaToken,
+            Method = "backup",
+            Code = codes[0],
+        }, "127.0.0.1");
+        Assert.Equal(user.ID, verified.ID);
+
+        var challenge2 = svc.CreateChallenge(user, false);
+        Assert.Throws<InvalidOperationException>(() => svc.VerifyChallenge(new VerifyMfaModel
+        {
+            MfaToken = challenge2.MfaToken,
+            Method = "backup",
+            Code = codes[0],
+        }, "127.0.0.1"));
     }
 }

@@ -37,6 +37,7 @@
     <p class="sub">账号密码已通过@(String.IsNullOrEmpty(Model?.DisplayName) ? "" : "（" + Model.DisplayName + "）")，请完成第二因子</p>
     @Html.ValidationSummary(true, "", new { @class = "text-danger" })
     <form action="@Url.Action("VerifyMfa", "User", new { r = returnUrl })" method="post" id="mfa-form">
+        @Html.AntiForgeryToken()
         <input type="hidden" name="MfaToken" value="@Model?.MfaToken" />
         <div class="methods">
             @foreach (var m in methods)
@@ -66,7 +67,11 @@
   $('input[name=Method]').on('change', syncHint);
   syncHint();
   $('#btn-send').on('click', function () {
-    $.post('@Url.Action("SendMfaCode", "User")', { MfaToken: $('input[name=MfaToken]').val(), Method: $('input[name=Method]:checked').val() })
+    $.post('@Url.Action("SendMfaCode", "User")', {
+      MfaToken: $('input[name=MfaToken]').val(),
+      Method: $('input[name=Method]:checked').val(),
+      __RequestVerificationToken: $('input[name="__RequestVerificationToken"]').val()
+    })
       .done(function (res) { alert(res.msg || res.message || '已发送'); })
       .fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '发送失败'); });
   });

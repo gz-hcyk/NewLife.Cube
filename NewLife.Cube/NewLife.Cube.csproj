@@ -108,6 +108,7 @@
     <Compile Include="..\NewLife.CubeNC\Services\UserService.cs" Link="Services\UserService.cs" />
     <Compile Include="..\NewLife.CubeNC\Models\MfaModels.cs" Link="Models\MfaModels.cs" />
     <Compile Include="..\NewLife.CubeNC\Security\Totp.cs" Link="Security\Totp.cs" />
+    <Compile Include="..\NewLife.CubeNC\Security\MfaSession.cs" Link="Security\MfaSession.cs" />
     <Compile Include="..\NewLife.CubeNC\Session\SessionProvider.cs" Link="Session\SessionProvider.cs" />
     <Compile Include="..\NewLife.CubeNC\ViewModels\DataField.cs" Link="ViewModels\DataField.cs" />
     <Compile Include="..\NewLife.CubeNC\ViewModels\ErrorModel.cs" Link="ViewModels\ErrorModel.cs" />

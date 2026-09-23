@@ -353,10 +353,14 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
     #endregion
 
     #region 通道 / 启停 / 恢复码
-    /// <summary>启停短信/邮件通道</summary>
-    public void SetChannel(User user, String channel, Boolean enable, String ip)
+    /// <summary>启停短信/邮件通道。须二次确认；若新生成恢复码则返回明文一次</summary>
+    public String[] SetChannel(User user, String channel, Boolean enable, String method, String code, String ip)
     {
         var mfa = UserMfa.GetOrCreate(user.ID);
+        // 启停均须证明身份，防止会话劫持/CSRF 静默降级或加弱因子
+        EnsureProtectionKey(CubeSetting.Current);
+        EnsureConfirm(user, mfa, method.IsNullOrEmpty() ? "password" : method, code);
+
         channel = (channel ?? "").Trim().ToLowerInvariant();
         if (channel == "sms")
         {
@@ -372,23 +376,25 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         }
         else throw new ArgumentException("通道仅支持 sms/mail", nameof(channel));
 
+        String[] freshCodes = null;
         if (enable)
         {
             mfa.Enable = true;
             if (CountBackupCodes(mfa) == 0)
             {
-                var codes = GenerateBackupCodes(8);
-                mfa.BackupCodes = HashBackupCodes(codes).ToJson();
-                // 恢复码仅在 TOTP 确认或主动生成时展示；此处静默生成哈希
+                freshCodes = GenerateBackupCodes(8);
+                mfa.BackupCodes = HashBackupCodes(freshCodes).ToJson();
             }
         }
         else if (!mfa.HasBoundFactor)
         {
             mfa.Enable = false;
+            mfa.BackupCodes = null;
         }
 
         mfa.Update();
         LogProvider.Provider.WriteLog(typeof(User), "MFA通道", true, $"{channel}={enable}", user.ID, user.Name, ip);
+        return freshCodes;
     }
 
     /// <summary>关闭用户 MFA</summary>
@@ -478,8 +484,9 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         var list = new String[count];
         for (var i = 0; i < count; i++)
         {
-            var raw = Rand.NextString(8).ToUpperInvariant();
-            list[i] = $"{raw[..4]}-{raw[4..]}";
+            // 16 位字母数字 ≈ 82 bit，分组便于抄录
+            var raw = Rand.NextString(16).ToUpperInvariant();
+            list[i] = $"{raw[..4]}-{raw[4..8]}-{raw[8..12]}-{raw[12..]}";
         }
         return list;
     }
@@ -487,10 +494,45 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
     private static IList<String> HashBackupCodes(IEnumerable<String> codes) =>
         codes.Select(HashCode).ToList();
 
+    /// <summary>恢复码哈希。v2 为 HMAC-SHA256 + 每码独立盐；兼容旧版无盐 SHA256</summary>
     private static String HashCode(String code)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(NormalizeBackup(code)));
-        return Convert.ToHexString(bytes);
+        var salt = RandomNumberGenerator.GetBytes(16);
+        var mac = ComputeBackupMac(NormalizeBackup(code), salt);
+        return $"v2:{Convert.ToHexString(salt)}:{Convert.ToHexString(mac)}";
+    }
+
+    private static Byte[] ComputeBackupMac(String normalized, Byte[] salt)
+    {
+        var key = DeriveKey();
+        var data = Encoding.UTF8.GetBytes(normalized).Concat(salt).ToArray();
+        return HMACSHA256.HashData(key, data);
+    }
+
+    private static Boolean VerifyBackupHash(String code, String stored)
+    {
+        if (stored.IsNullOrEmpty()) return false;
+        var normalized = NormalizeBackup(code);
+        if (stored.StartsWith("v2:", StringComparison.Ordinal))
+        {
+            var parts = stored.Split(':');
+            if (parts.Length != 3) return false;
+            try
+            {
+                var salt = Convert.FromHexString(parts[1]);
+                var expected = Convert.FromHexString(parts[2]);
+                var actual = ComputeBackupMac(normalized, salt);
+                return CryptographicOperations.FixedTimeEquals(expected, actual);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // 兼容 v1 无盐 SHA256
+        var legacy = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)));
+        return legacy.EqualIgnoreCase(stored);
     }
 
     private static String NormalizeBackup(String code) =>
@@ -499,8 +541,7 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
     private Boolean ConsumeBackupCode(UserMfa mfa, String code)
     {
         var hashes = mfa.BackupCodes.ToJsonEntity<List<String>>() ?? [];
-        var target = HashCode(code);
-        var idx = hashes.FindIndex(e => e.EqualIgnoreCase(target));
+        var idx = hashes.FindIndex(e => VerifyBackupHash(code, e));
         if (idx < 0) return false;
         hashes.RemoveAt(idx);
         mfa.BackupCodes = hashes.ToJson();
