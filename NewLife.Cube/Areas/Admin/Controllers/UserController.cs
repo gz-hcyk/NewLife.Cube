@@ -351,7 +351,8 @@ public class UserController : EntityController<User, UserModel>
             {
                 UserService.ClearOnline(ManageProvider.User as User);
 
-                return Redirect($"~/Sso/Logout?name={name}&r={HttpUtility.UrlEncode(returnUrl)}");
+                var safeR = (!returnUrl.IsNullOrEmpty() && Url.IsLocalUrl(returnUrl)) ? returnUrl : null;
+                return Redirect($"~/Sso/Logout?name={name}&r={HttpUtility.UrlEncode(safeR)}");
             }
             //if (!name.IsNullOrEmpty()) return RedirectToAction("Logout", "Sso", new
             //{

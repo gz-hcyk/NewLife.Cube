@@ -1,11 +1,13 @@
 @model NewLife.Cube.Models.MfaChallengeModel
 @using NewLife.Common
+@using System.Text.Json
 @{
     Layout = null;
     ViewBag.Title = "绑定二步验证";
     var res = CubeSetting.Current.ResourceUrl;
     if (res.IsNullOrEmpty()) res = "/Content";
     var returnUrl = ViewBag.ReturnUrl as String;
+    var returnUrlJson = JsonSerializer.Serialize(returnUrl ?? "");
 }
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -56,7 +58,7 @@
     $('#secret-text').text((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '加载失败');
   });
   $('#btn-confirm').on('click', function () {
-    $.post('@Url.Action("MfaTotpConfirm", "User")', { code: $('#confirm-code').val(), mfaToken: token, r: '@returnUrl' })
+    $.post('@Url.Action("MfaTotpConfirm", "User")', { code: $('#confirm-code').val(), mfaToken: token, r: @Html.Raw(returnUrlJson) })
       .done(function (res) {
         var data = res.data || res.Data || res;
         var codes = data.backupCodes || data.BackupCodes || [];

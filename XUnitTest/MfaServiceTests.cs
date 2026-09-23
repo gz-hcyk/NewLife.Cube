@@ -193,4 +193,38 @@ public class MfaServiceTests
         Assert.True(needChallenge);
         Assert.False(needBind);
     }
+
+    [Fact]
+    [DisplayName("ST-04_EvaluateAfterLogin_短信邮件登录与密码SSO共用判定")]
+    public void EvaluateAfterLogin_SharedBySmsMailPasswordSso()
+    {
+        // LoginBySms/LoginByMail/LoginByPassword/SSO 均经 FinishLoginOrMfa → EvaluateAfterLogin
+        CubeSetting.Current.EnableMfa = true;
+        CubeSetting.Current.MfaRequired = false;
+        var svc = CreateService();
+        var user = new XCode.Membership.User
+        {
+            Name = "mfa_sms_" + Guid.NewGuid().ToString("N")[..8],
+            Enable = true,
+            Mobile = "13800138000",
+            MobileVerified = true,
+        };
+        user.Insert();
+
+        var (c0, b0, _) = svc.EvaluateAfterLogin(user);
+        Assert.False(c0);
+        Assert.False(b0);
+
+        var setup = svc.StartTotpSetup(user);
+        svc.ConfirmTotpSetup(user, Totp.ComputeCode(setup.Secret), "127.0.0.1");
+
+        var (needChallenge, needBind, _) = svc.EvaluateAfterLogin(user);
+        Assert.True(needChallenge);
+        Assert.False(needBind);
+
+        // 与 EvaluateAfterPassword 别名一致，防止短信路径误用旁路 API
+        var (c2, b2, _) = svc.EvaluateAfterPassword(user);
+        Assert.Equal(needChallenge, c2);
+        Assert.Equal(needBind, b2);
+    }
 }

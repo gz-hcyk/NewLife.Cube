@@ -177,40 +177,47 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             if (!loginModel.Pkey.IsNullOrEmpty()) _cache.Remove(loginModel.Pkey);
 
             var user = provider.Current as User;
-            var (needChallenge, needBind, _) = mfaService.EvaluateAfterPassword(user);
-            if (needBind)
-            {
-                // 清除 ManageProvider.Login 已写入的会话；签发仅用于绑定的 setupToken
-                provider.Logout();
-                var setup = mfaService.CreateSetupSession(user, remember);
-                return new ServiceResult<TokenModel>
-                {
-                    IsSuccess = false,
-                    Code = (Int32)CubeCode.MfaBindRequired,
-                    Message = "须先绑定二步验证",
-                    Extra = setup,
-                };
-            }
-            if (needChallenge)
-            {
-                provider.Logout();
-                var challenge = mfaService.CreateChallenge(user, remember);
-                return new ServiceResult<TokenModel>
-                {
-                    IsSuccess = false,
-                    Code = (Int32)CubeCode.MfaRequired,
-                    Message = "需要二步验证",
-                    Extra = challenge,
-                };
-            }
-
-            return CompleteLogin(user, httpContext, remember, "密码登录", username, ip);
+            return FinishLoginOrMfa(user, httpContext, remember, "密码登录", username, ip);
         }
         catch (Exception ex)
         {
             HandleLoginError(ex, "登录", username, ip, key, ipKey, errors, ipErrors, set.LoginForbiddenTime);
             throw;
         }
+    }
+
+    /// <summary>第一因子通过后：按统一策略插入 MFA 门闸，或完成登录</summary>
+    private ServiceResult<TokenModel> FinishLoginOrMfa(User user, HttpContext httpContext, Boolean remember, String action, String username, String ip)
+    {
+        var provider = ManageProvider.Provider;
+        var (needChallenge, needBind, _) = mfaService.EvaluateAfterLogin(user);
+        if (needBind)
+        {
+            // 清除可能已写入的会话；签发仅用于绑定的 setupToken
+            provider.Logout();
+            var setup = mfaService.CreateSetupSession(user, remember);
+            return new ServiceResult<TokenModel>
+            {
+                IsSuccess = false,
+                Code = (Int32)CubeCode.MfaBindRequired,
+                Message = "须先绑定二步验证",
+                Extra = setup,
+            };
+        }
+        if (needChallenge)
+        {
+            provider.Logout();
+            var challenge = mfaService.CreateChallenge(user, remember);
+            return new ServiceResult<TokenModel>
+            {
+                IsSuccess = false,
+                Code = (Int32)CubeCode.MfaRequired,
+                Message = "需要二步验证",
+                Extra = challenge,
+            };
+        }
+
+        return CompleteLogin(user, httpContext, remember, action, username, ip);
     }
 
     /// <summary>完成 MFA 挑战并登录</summary>
@@ -314,7 +321,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
 
             if (!user.Enable) throw new InvalidOperationException("用户已禁用");
 
-            // 验证通过，执行登录
+            // 验证通过：置当前用户后走与密码/SSO 相同的 MFA 门闸（验证码登录 ≠ 已完成第二因子）
             var provider = ManageProvider.Provider;
             provider.Current = user;
 
@@ -322,7 +329,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             if (errors > 0) _cache.Remove(key);
             if (ipErrors > 0) _cache.Remove(ipKey);
 
-            return CompleteLogin(user, httpContext, remember, "短信登录", mobile, ip);
+            return FinishLoginOrMfa(user, httpContext, remember, "短信登录", mobile, ip);
         }
         catch (Exception ex)
         {
@@ -400,7 +407,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
 
             if (!user.Enable) throw new InvalidOperationException("用户已禁用");
 
-            // 验证通过，执行登录
+            // 验证通过：置当前用户后走与密码/SSO 相同的 MFA 门闸
             var provider = ManageProvider.Provider;
             provider.Current = user;
 
@@ -408,7 +415,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             if (errors > 0) _cache.Remove(key);
             if (ipErrors > 0) _cache.Remove(ipKey);
 
-            return CompleteLogin(user, httpContext, remember, "邮箱登录", mail, ip);
+            return FinishLoginOrMfa(user, httpContext, remember, "邮箱登录", mail, ip);
         }
         catch (Exception ex)
         {
