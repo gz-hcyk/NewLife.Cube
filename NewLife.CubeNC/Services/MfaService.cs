@@ -24,6 +24,8 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
     private const String MailLastSendPrefix = "Mfa:Mail:LastSend:";
     private const String SmsIpPrefix = "Mfa:Sms:IP:";
     private const String MailIpPrefix = "Mfa:Mail:IP:";
+    private const String SmsUserDayPrefix = "Mfa:Sms:UserDay:";
+    private const String MailUserDayPrefix = "Mfa:Mail:UserDay:";
 
     private readonly ICache _cache = cacheProvider.Cache;
 
@@ -222,7 +224,7 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         var config = smsService.GetConfig(TenantContext.CurrentId, "login");
         if (config == null) throw new XException("短信服务未配置");
 
-        GuardSendRate($"{SmsIpPrefix}{ip}", $"{SmsLastSendPrefix}{user.Mobile}");
+        GuardSendRate($"{SmsIpPrefix}{ip}", $"{SmsLastSendPrefix}{user.Mobile}", $"{SmsUserDayPrefix}{user.ID}");
 
         var code = SmsService.GenerateVerifyCode(config.CodeLength > 0 ? config.CodeLength : 6);
         var rs = await smsService.SendVerifyCode("login", user.Mobile, code, config);
@@ -238,7 +240,7 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         if (!set.EnableMail) throw new XException("邮件验证码功能未启用");
 
         var config = mailService.GetConfig(TenantContext.CurrentId, "login");
-        GuardSendRate($"{MailIpPrefix}{ip}", $"{MailLastSendPrefix}{user.Mail}");
+        GuardSendRate($"{MailIpPrefix}{ip}", $"{MailLastSendPrefix}{user.Mail}", $"{MailUserDayPrefix}{user.ID}");
 
         var code = MailService.GenerateVerifyCode(config != null && config.CodeLength > 0 ? config.CodeLength : 6);
         var rs = await mailService.SendVerifyCode("login", user.Mail, code, config);
@@ -249,10 +251,13 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         _cache.Set($"{MailLastSendPrefix}{user.Mail}", DateTime.Now, 60);
     }
 
-    private void GuardSendRate(String ipKey, String lastKey)
+    private void GuardSendRate(String ipKey, String lastKey, String userDayKey)
     {
         var ipCount = _cache.Get<Int32>(ipKey);
         if (ipCount >= 5) throw new XException("发送频繁，请稍后再试");
+
+        var dayCount = _cache.Get<Int32>(userDayKey);
+        if (dayCount >= 20) throw new XException("今日发送次数已达上限");
 
         var lastSend = _cache.Get<DateTime>(lastKey);
         if (lastSend > DateTime.MinValue && (DateTime.Now - lastSend).TotalSeconds < 60)
@@ -263,6 +268,13 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
 
         _cache.Increment(ipKey, 1);
         if (ipCount <= 0) _cache.SetExpire(ipKey, TimeSpan.FromMinutes(10));
+
+        _cache.Increment(userDayKey, 1);
+        if (dayCount <= 0)
+        {
+            var tomorrow = DateTime.Today.AddDays(1);
+            _cache.SetExpire(userDayKey, tomorrow - DateTime.Now);
+        }
     }
 
     private Boolean VerifySmsCode(User user, String code)
@@ -462,8 +474,8 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         code ??= "";
         if (method == "password")
         {
-            var hash = ManageProvider.Provider?.PasswordProvider?.Hash(code);
-            if (hash.IsNullOrEmpty() || user.Password != hash)
+            var pp = ManageProvider.Provider?.PasswordProvider;
+            if (pp == null || code.IsNullOrEmpty() || !pp.Verify(code, user.Password))
                 throw new InvalidOperationException("密码错误");
             return;
         }
@@ -596,15 +608,17 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
 
     private static void EnsureProtectionKey(CubeSetting set)
     {
-        if (set.JwtSecret.IsNullOrEmpty())
-            throw new InvalidOperationException("请先在魔方设置中配置 JWT 密钥后再启用/绑定 MFA");
+        if (set.MfaProtectionKey.IsNullOrEmpty() && set.JwtSecret.IsNullOrEmpty())
+            throw new InvalidOperationException("请先在魔方设置中配置 MFA 保护密钥或 JWT 密钥后再启用/绑定 MFA");
     }
 
     private static Byte[] DeriveKey()
     {
-        var material = CubeSetting.Current.JwtSecret;
+        var set = CubeSetting.Current;
+        var material = set.MfaProtectionKey;
+        if (material.IsNullOrEmpty()) material = set.JwtSecret;
         if (material.IsNullOrEmpty())
-            throw new InvalidOperationException("JWT 密钥未配置，无法保护 TOTP 密钥");
+            throw new InvalidOperationException("MFA 保护密钥未配置，无法保护 TOTP 密钥");
         return SHA256.HashData(Encoding.UTF8.GetBytes(material));
     }
 

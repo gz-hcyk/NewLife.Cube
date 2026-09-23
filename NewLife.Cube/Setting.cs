@@ -227,6 +227,11 @@ public class CubeSetting : Config<CubeSetting>
     [Description("TOTP 签发方名称。Authenticator 中显示的 issuer，默认 NewLife.Cube")]
     [Category("用户登录")]
     public String MfaIssuer { get; set; } = "NewLife.Cube";
+
+    /// <summary>MFA 数据保护密钥。用于加密 TOTP 密钥与恢复码 HMAC；独立于 JwtSecret，留空则启动时自动生成</summary>
+    [Description("MFA 数据保护密钥。用于加密 TOTP 密钥与恢复码 HMAC；独立于 JwtSecret，留空则启动时自动生成")]
+    [Category("用户登录")]
+    public String MfaProtectionKey { get; set; }
     #endregion
 
     #region 界面配置
@@ -377,7 +382,8 @@ public class CubeSetting : Config<CubeSetting>
         //if (AvatarPath.IsNullOrEmpty()) AvatarPath = web ? "..\\Avatars" : "Avatars";
         if (DefaultRole.IsNullOrEmpty() || DefaultRole == "3") DefaultRole = "普通用户";
 
-        if (JwtSecret.IsNullOrEmpty() || JwtSecret.Split(':').Length != 2) JwtSecret = $"HS256:{Rand.NextString(16)}";
+        if (JwtSecret.IsNullOrEmpty() || JwtSecret.Split(':').Length != 2) JwtSecret = $"HS256:{Rand.NextString(32)}";
+        if (MfaProtectionKey.IsNullOrEmpty()) MfaProtectionKey = Rand.NextString(32);
 
         // 取版权信息
         if (Copyright.IsNullOrEmpty())

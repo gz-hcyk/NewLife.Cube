@@ -82,7 +82,9 @@ public static class MfaSession
 
     private static String SignSatisfied(Int32 userId)
     {
-        var material = CubeSetting.Current.JwtSecret;
+        var set = CubeSetting.Current;
+        var material = set.MfaProtectionKey;
+        if (material.IsNullOrEmpty()) material = set.JwtSecret;
         if (material.IsNullOrEmpty()) material = "Cube.MfaOk";
         var key = SHA256.HashData(Encoding.UTF8.GetBytes(material));
         var data = Encoding.UTF8.GetBytes("mfaok:" + userId);

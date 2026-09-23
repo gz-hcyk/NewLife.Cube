@@ -26,6 +26,7 @@ public class MfaServiceTests
         DAL.AddConnStr("Membership", conn, null, "SQLite");
         DAL.AddConnStr("Log", conn, null, "SQLite");
         CubeSetting.Current.JwtSecret = "HS256:test-secret-key-for-mfa-audit";
+        CubeSetting.Current.MfaProtectionKey = "test-mfa-protection-key-32chars!!";
     }
 
     private static MfaService CreateService()

@@ -43,7 +43,8 @@ public partial class UserMfa : Entity<UserMfa>
         (TotpConfirmed && !TotpSecret.IsNullOrEmpty()) || SmsEnabled || MailEnabled;
 
     /// <summary>是否处于可用 MFA 状态</summary>
-    public Boolean IsActive => Enable && (HasBoundFactor || !BackupCodes.IsNullOrEmpty());
+    public Boolean IsActive =>
+        Enable && (HasBoundFactor || (!BackupCodes.IsNullOrEmpty() && BackupCodes != "[]" && BackupCodes != "null"));
     #endregion
 
     #region 业务操作

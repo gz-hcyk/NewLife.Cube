@@ -180,21 +180,24 @@ public class SsoProvider
         // 填充昵称等数据
         Fill(client, user);
 
-        if (user is IAuthUser user3)
-        {
-            user3.Logins++;
-            user3.LastLogin = DateTime.Now;
-            user3.LastLoginIP = ip;
-            //user3.Save();
-            //(user3 as IEntity).Update();
-        }
-        if (user is IUser user4) user4.Online = true;
-        if (user is IEntity entity) entity.Update();
-
         // 用户角色可能有更新，需要清空扩展属性，避免Roles保留脏数据，导致用户首次访问显示无权限
         (user as IEntity).Extends.Clear();
 
         if (!user.Enable) throw new InvalidOperationException($"用户[{user}]已禁用！");
+
+        var set = CubeSetting.Current;
+
+        // 绑定已有会话：须当前会话已满足 MFA，防止弱会话借 Bind 固化入口
+        if (forceBind && set.EnableMfa)
+        {
+            var current = prv.Current as User;
+            if (current != null)
+            {
+                var curMfa = UserMfa.FindByUserId(current.ID);
+                if (curMfa != null && curMfa.IsActive && !MfaSession.IsSatisfied(httpContext, current.ID))
+                    throw new InvalidOperationException("请先完成二步验证后再绑定第三方账号");
+            }
+        }
 
         // 绑定已有会话账号时不再二次挑战；SSO 新登录须过 MFA（与密码登录同一策略）
         if (!forceBind && user is User ssoUser)
@@ -202,6 +205,16 @@ public class SsoProvider
             var mfaUrl = TryPrepareMfaRedirect(context, ssoUser, client.Name);
             if (!mfaUrl.IsNullOrEmpty()) return mfaUrl;
         }
+
+        // MFA 已通过或不需要：再更新登录计数/在线状态（避免挑战页前污染审计）
+        if (user is IAuthUser user3)
+        {
+            user3.Logins++;
+            user3.LastLogin = DateTime.Now;
+            user3.LastLoginIP = ip;
+        }
+        if (user is IUser user4) user4.Online = true;
+        if (user is IEntity entity) entity.Update();
 
         // 写日志
         var log = LogProvider.Provider;
@@ -213,7 +226,6 @@ public class SsoProvider
 
         // 单点登录不要保存Cookie，让它在Session过期时请求认证中心
         //prv.SaveCookie(user);
-        var set = CubeSetting.Current;
         if (set.SessionTimeout > 0)
         {
             var expire = TimeSpan.FromSeconds(set.SessionTimeout);

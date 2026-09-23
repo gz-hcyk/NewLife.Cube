@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Collections.Generic;
+using System.Text;
 using NewLife.Caching;
 using NewLife.Cube.Areas.Admin.Models;
 using NewLife.Cube.Common;
@@ -166,8 +167,33 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             var rsaKey = pdic?.Item2;
             password = rsaKey.IsNullOrEmpty() ? password : Decrypt(rsaKey, password);
 
+            // 优先 LoginCore：校验密码但不写 Cookie，避免 MFA 前会话窗口
             var provider = ManageProvider.Provider;
-            if (provider.Login(username, password, remember) == null)
+            User user;
+            var oauths = OAuthConfig.GetValids(TenantContext.CurrentId, GrantTypes.Password);
+            if (oauths != null && oauths.Count > 0)
+            {
+                if (provider.Login(username, password, remember) == null)
+                    return new ServiceResult<TokenModel> { IsSuccess = false, Message = "提供的用户名或密码不正确。" };
+                user = provider.Current as User;
+            }
+            else if (provider is ManageProvider mp)
+            {
+                var authed = mp.LoginCore(username, password);
+                if (authed == null)
+                    return new ServiceResult<TokenModel> { IsSuccess = false, Message = "提供的用户名或密码不正确。" };
+                user = authed as User;
+                if (provider is ManageProvider2 mp2)
+                    user = mp2.CheckAgent(user) as User;
+            }
+            else
+            {
+                if (provider.Login(username, password, remember) == null)
+                    return new ServiceResult<TokenModel> { IsSuccess = false, Message = "提供的用户名或密码不正确。" };
+                user = provider.Current as User;
+            }
+
+            if (user == null)
                 return new ServiceResult<TokenModel> { IsSuccess = false, Message = "提供的用户名或密码不正确。" };
 
             // 登录成功，清空错误数
@@ -177,7 +203,6 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             // 移除秘钥私钥信息，避免重放
             if (!loginModel.Pkey.IsNullOrEmpty()) _cache.Remove(loginModel.Pkey);
 
-            var user = provider.Current as User;
             return FinishLoginOrMfa(user, httpContext, remember, "密码登录", username, ip);
         }
         catch (Exception ex)
@@ -195,7 +220,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
         if (needBind)
         {
             // 清除可能已写入的会话；签发仅用于绑定的 setupToken
-            provider.Logout();
+            if (provider.Current?.ID == user.ID) provider.Logout();
             var setup = mfaService.CreateSetupSession(user, remember);
             return new ServiceResult<TokenModel>
             {
@@ -207,7 +232,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
         }
         if (needChallenge)
         {
-            provider.Logout();
+            if (provider.Current?.ID == user.ID) provider.Logout();
             var challenge = mfaService.CreateChallenge(user, remember);
             return new ServiceResult<TokenModel>
             {
@@ -430,11 +455,17 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
     {
         var set = CubeSetting.Current;
 
+        // 缓解会话固定：清空服务端 Session 字典后再写入新登录态
+        if (httpContext.Items["Session"] is IDictionary<String, Object> sessionBag)
+            sessionBag.Clear();
+
         // 保存Cookie
         var provider = ManageProvider.Provider;
         var expire = remember ? TimeSpan.FromDays(365) : TimeSpan.FromMinutes(0);
         if (set.SessionTimeout > 0 && !remember)
             expire = TimeSpan.FromSeconds(set.SessionTimeout);
+
+        provider.Current = user;
         provider.SaveCookie(user, expire, httpContext);
 
         // 本登录已满足 MFA 策略：写入会话戳，开启 MFA 后存量未过第二因子的会话将被踢出
