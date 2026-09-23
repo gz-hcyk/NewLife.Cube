@@ -618,12 +618,12 @@ public class UserController : EntityController<User, UserModel>
     /// <summary>开始绑定 TOTP</summary>
     [HttpPost]
     [AllowAnonymous]
-    public ActionResult MfaTotpStart(String mfaToken = null)
+    public ActionResult MfaTotpStart(String mfaToken = null, String confirmMethod = null, String confirmCode = null)
     {
         try
         {
             var user = ResolveMfaUser(mfaToken);
-            var setup = _mfaService.StartTotpSetup(user);
+            var setup = _mfaService.StartTotpSetup(user, confirmMethod, confirmCode);
             return Json(0, "ok", setup);
         }
         catch (Exception ex)
@@ -724,7 +724,8 @@ public class UserController : EntityController<User, UserModel>
     {
         if (!mfaToken.IsNullOrEmpty())
         {
-            var (user, _) = _mfaService.ResolveTokenUser(mfaToken);
+            // 仅允许强制绑定 setupToken，禁止用登录挑战令牌改绑 TOTP
+            var (user, _) = _mfaService.ResolveTokenUser(mfaToken, requireSetup: true);
             return user;
         }
         var current = ManageProvider.User as XCode.Membership.User;

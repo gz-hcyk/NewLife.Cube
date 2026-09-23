@@ -226,7 +226,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
         }
         catch (Exception ex)
         {
-            LogProvider.Provider.WriteLog(typeof(User), "MFA登录", false, ex.Message, 0, model?.MfaToken, ip);
+        LogProvider.Provider.WriteLog(typeof(User), "MFA登录", false, ex.Message, 0, null, ip);
             throw;
         }
     }

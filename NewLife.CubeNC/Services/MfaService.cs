@@ -79,11 +79,16 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
     }
 
     /// <summary>根据 setup/challenge 令牌解析用户</summary>
+    /// <param name="mfaToken">令牌</param>
+    /// <param name="requireSetup">true 时仅允许强制绑定会话；用于 TOTP 绑定 API</param>
     public (User user, MfaChallengeState state) ResolveTokenUser(String mfaToken, Boolean requireSetup = false)
     {
         var state = GetChallenge(mfaToken);
         if (state == null) throw new InvalidOperationException("会话已过期，请重新登录");
-        if (requireSetup && !state.IsSetup) throw new InvalidOperationException("无效的绑定会话");
+        if (requireSetup)
+        {
+            if (!state.IsSetup) throw new InvalidOperationException("挑战令牌不可用于绑定操作");
+        }
         var user = User.FindByID(state.UserId) ?? throw new InvalidOperationException("用户不存在");
         return (user, state);
     }
@@ -135,6 +140,9 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         using var span = tracer?.NewSpan(nameof(VerifyChallenge), model?.Method);
         var state = GetChallenge(model?.MfaToken);
         if (state == null) throw new InvalidOperationException("挑战已过期，请重新登录");
+        if (state.IsSetup) throw new InvalidOperationException("绑定会话不可用于登录校验");
+
+        GuardMfaFailures(model.MfaToken, state.UserId, ip);
 
         var user = User.FindByID(state.UserId);
         if (user == null || !user.Enable) throw new InvalidOperationException("用户不存在或已禁用");
@@ -145,6 +153,10 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         var method = (model.Method ?? "").Trim().ToLowerInvariant();
         var code = model.Code?.Trim() ?? "";
         if (code.IsNullOrEmpty()) throw new ArgumentException("验证码不能为空", nameof(model.Code));
+
+        var allowed = GetMethods(mfa, user);
+        if (!allowed.Contains(method, StringComparer.OrdinalIgnoreCase))
+            throw new ArgumentException("当前不可使用该验证通道", nameof(model.Method));
 
         var ok = method switch
         {
@@ -157,10 +169,12 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
 
         if (!ok)
         {
+            RecordMfaFailure(model.MfaToken, state.UserId, ip);
             LogProvider.Provider.WriteLog(typeof(User), "MFA校验", false, $"method={method}", user.ID, user.Name, ip);
             throw new InvalidOperationException("验证码错误");
         }
 
+        ClearMfaFailures(model.MfaToken, state.UserId, ip);
         var remember = state.Remember;
         ConsumeChallenge(model.MfaToken);
         LogProvider.Provider.WriteLog(typeof(User), "MFA校验", true, $"method={method}", user.ID, user.Name, ip);
@@ -267,10 +281,19 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
     #endregion
 
     #region TOTP 绑定
-    /// <summary>开始绑定 TOTP，返回密钥与 otpauth。user 来自登录用户或 setupToken</summary>
-    public TotpSetupModel StartTotpSetup(User user)
+    /// <summary>开始绑定 TOTP。已绑定时须先通过 confirmMethod/confirmCode 证明持有旧因子</summary>
+    public TotpSetupModel StartTotpSetup(User user, String confirmMethod = null, String confirmCode = null)
     {
+        var existing = UserMfa.FindByUserId(user.ID);
+        if (existing != null && existing.TotpConfirmed && !existing.TotpSecret.IsNullOrEmpty())
+        {
+            if (confirmCode.IsNullOrEmpty())
+                throw new InvalidOperationException("重新绑定须先验证当前第二因子或密码");
+            EnsureConfirm(user, existing, confirmMethod, confirmCode);
+        }
+
         var set = CubeSetting.Current;
+        EnsureProtectionKey(set);
         var secret = Totp.GenerateSecret();
         _cache.Set($"{PendingTotpPrefix}{user.ID}", secret, 600);
 
@@ -287,6 +310,7 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
     /// <summary>确认 TOTP 首码并启用；返回一次性明文恢复码</summary>
     public String[] ConfirmTotpSetup(User user, String code, String ip)
     {
+        EnsureProtectionKey(CubeSetting.Current);
         var secret = _cache.Get<String>($"{PendingTotpPrefix}{user.ID}");
         if (secret.IsNullOrEmpty()) throw new InvalidOperationException("绑定会话已过期，请重新开始");
         if (!Totp.Verify(secret, code)) throw new InvalidOperationException("验证码错误");
@@ -488,6 +512,7 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
     private static String ProtectSecret(String plain)
     {
         if (plain.IsNullOrEmpty()) return plain;
+        EnsureProtectionKey(CubeSetting.Current);
         var key = DeriveKey();
         var plainBytes = Encoding.UTF8.GetBytes(plain);
         var iv = RandomNumberGenerator.GetBytes(16);
@@ -505,7 +530,7 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
         try
         {
             var all = Convert.FromBase64String(protectedText);
-            if (all.Length < 17) return null;
+            if (all.Length < 17) throw new CryptographicException("密文过短");
             var iv = all.AsSpan(0, 16).ToArray();
             var cipher = all.AsSpan(16).ToArray();
             using var aes = Aes.Create();
@@ -515,18 +540,67 @@ public class MfaService(ICacheProvider cacheProvider, SmsService smsService, Mai
             var plain = dec.TransformFinalBlock(cipher, 0, cipher.Length);
             return Encoding.UTF8.GetString(plain);
         }
-        catch
+        catch (Exception ex)
         {
-            // 兼容未加密明文（开发期）
-            return protectedText;
+            XTrace.WriteException(ex);
+            throw new InvalidOperationException("TOTP 密钥解密失败，请重新绑定验证器");
         }
+    }
+
+    private static void EnsureProtectionKey(CubeSetting set)
+    {
+        if (set.JwtSecret.IsNullOrEmpty())
+            throw new InvalidOperationException("请先在魔方设置中配置 JWT 密钥后再启用/绑定 MFA");
     }
 
     private static Byte[] DeriveKey()
     {
         var material = CubeSetting.Current.JwtSecret;
-        if (material.IsNullOrEmpty()) material = "NewLife.Cube.Mfa.DefaultKey";
+        if (material.IsNullOrEmpty())
+            throw new InvalidOperationException("JWT 密钥未配置，无法保护 TOTP 密钥");
         return SHA256.HashData(Encoding.UTF8.GetBytes(material));
+    }
+
+    private const String MfaFailTokenPrefix = "Mfa:Fail:Token:";
+    private const String MfaFailUserPrefix = "Mfa:Fail:User:";
+    private const String MfaFailIpPrefix = "Mfa:Fail:IP:";
+
+    private void GuardMfaFailures(String mfaToken, Int32 userId, String ip)
+    {
+        var set = CubeSetting.Current;
+        if (set.MaxLoginError <= 0) return;
+        var max = set.MaxLoginError;
+        if (_cache.Get<Int32>($"{MfaFailTokenPrefix}{mfaToken}") >= max ||
+            _cache.Get<Int32>($"{MfaFailUserPrefix}{userId}") >= max ||
+            (!ip.IsNullOrEmpty() && _cache.Get<Int32>($"{MfaFailIpPrefix}{ip}") >= max))
+        {
+            ConsumeChallenge(mfaToken);
+            throw new InvalidOperationException($"二步验证错误过多，请在{set.LoginForbiddenTime}秒后重新登录");
+        }
+    }
+
+    private void RecordMfaFailure(String mfaToken, Int32 userId, String ip)
+    {
+        var set = CubeSetting.Current;
+        var time = set.LoginForbiddenTime > 0 ? set.LoginForbiddenTime : 300;
+        void bump(String key)
+        {
+            var n = _cache.Increment(key, 1);
+            if (n <= 1) _cache.SetExpire(key, TimeSpan.FromSeconds(time));
+        }
+        if (!mfaToken.IsNullOrEmpty()) bump($"{MfaFailTokenPrefix}{mfaToken}");
+        if (userId > 0) bump($"{MfaFailUserPrefix}{userId}");
+        if (!ip.IsNullOrEmpty()) bump($"{MfaFailIpPrefix}{ip}");
+
+        if (set.MaxLoginError > 0 && _cache.Get<Int32>($"{MfaFailTokenPrefix}{mfaToken}") >= set.MaxLoginError)
+            ConsumeChallenge(mfaToken);
+    }
+
+    private void ClearMfaFailures(String mfaToken, Int32 userId, String ip)
+    {
+        if (!mfaToken.IsNullOrEmpty()) _cache.Remove($"{MfaFailTokenPrefix}{mfaToken}");
+        if (userId > 0) _cache.Remove($"{MfaFailUserPrefix}{userId}");
+        if (!ip.IsNullOrEmpty()) _cache.Remove($"{MfaFailIpPrefix}{ip}");
     }
 
     private static String MaskMobile(String mobile)

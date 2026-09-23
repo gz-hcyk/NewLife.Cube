@@ -13,7 +13,7 @@ using Xunit;
 
 namespace XUnitTest;
 
-/// <summary>MFA 门闸逻辑测试（SQLite）</summary>
+/// <summary>MFA 门闸与安全回归测试（SQLite）</summary>
 public class MfaServiceTests
 {
     static MfaServiceTests()
@@ -22,6 +22,7 @@ public class MfaServiceTests
         DAL.AddConnStr("Cube", conn, null, "SQLite");
         DAL.AddConnStr("Membership", conn, null, "SQLite");
         DAL.AddConnStr("Log", conn, null, "SQLite");
+        CubeSetting.Current.JwtSecret = "HS256:test-secret-key-for-mfa-audit";
     }
 
     private static MfaService CreateService()
@@ -74,7 +75,7 @@ public class MfaServiceTests
     public void TotpConfirm_ThenVerifyChallenge()
     {
         CubeSetting.Current.EnableMfa = true;
-        CubeSetting.Current.JwtSecret = "HS256:test-secret-key-for-mfa";
+        CubeSetting.Current.MaxLoginError = 5;
         var svc = CreateService();
 
         var user = new XCode.Membership.User
@@ -94,8 +95,6 @@ public class MfaServiceTests
         Assert.Contains("backup", challenge.Methods);
 
         var totpCode = Totp.ComputeCode(setup.Secret);
-        // secret is now protected; verify via challenge using fresh code from same secret before protect... 
-        // After confirm, secret is encrypted — ComputeCode with original setup.Secret still works for VerifyTotp via Unprotect.
         var (verified, remember) = svc.VerifyChallenge(new VerifyMfaModel
         {
             MfaToken = challenge.MfaToken,
@@ -104,5 +103,74 @@ public class MfaServiceTests
         }, "127.0.0.1");
         Assert.Equal(user.ID, verified.ID);
         Assert.False(remember);
+    }
+
+    [Fact]
+    [DisplayName("ST-01_挑战令牌不可用于TOTP绑定解析")]
+    public void ChallengeToken_CannotResolveForSetup()
+    {
+        CubeSetting.Current.EnableMfa = true;
+        var svc = CreateService();
+        var user = new XCode.Membership.User
+        {
+            Name = "mfa_chal_" + Guid.NewGuid().ToString("N")[..8],
+            Enable = true,
+        };
+        user.Insert();
+
+        var setup = svc.StartTotpSetup(user);
+        svc.ConfirmTotpSetup(user, Totp.ComputeCode(setup.Secret), "127.0.0.1");
+        var challenge = svc.CreateChallenge(user, false);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            svc.ResolveTokenUser(challenge.MfaToken, requireSetup: true));
+    }
+
+    [Fact]
+    [DisplayName("ST-03_MFA连续失败达到阈值_作废挑战")]
+    public void VerifyChallenge_TooManyFailures_ConsumesToken()
+    {
+        CubeSetting.Current.EnableMfa = true;
+        CubeSetting.Current.MaxLoginError = 3;
+        CubeSetting.Current.LoginForbiddenTime = 300;
+        var svc = CreateService();
+        var user = new XCode.Membership.User
+        {
+            Name = "mfa_fail_" + Guid.NewGuid().ToString("N")[..8],
+            Enable = true,
+        };
+        user.Insert();
+        var setup = svc.StartTotpSetup(user);
+        svc.ConfirmTotpSetup(user, Totp.ComputeCode(setup.Secret), "127.0.0.1");
+        var challenge = svc.CreateChallenge(user, false);
+
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Throws<InvalidOperationException>(() => svc.VerifyChallenge(new VerifyMfaModel
+            {
+                MfaToken = challenge.MfaToken,
+                Method = "totp",
+                Code = "000000",
+            }, "10.0.0.9"));
+        }
+
+        Assert.Null(svc.GetChallenge(challenge.MfaToken));
+    }
+
+    [Fact]
+    [DisplayName("已绑定TOTP_无确认不可重新开始绑定")]
+    public void RebindTotp_RequiresConfirm()
+    {
+        var svc = CreateService();
+        var user = new XCode.Membership.User
+        {
+            Name = "mfa_rebind_" + Guid.NewGuid().ToString("N")[..8],
+            Enable = true,
+        };
+        user.Insert();
+        var setup = svc.StartTotpSetup(user);
+        svc.ConfirmTotpSetup(user, Totp.ComputeCode(setup.Secret), "127.0.0.1");
+
+        Assert.Throws<InvalidOperationException>(() => svc.StartTotpSetup(user));
     }
 }
