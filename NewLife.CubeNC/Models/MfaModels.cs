@@ -116,3 +116,42 @@ public class MfaConfirmModel
     /// <summary>验证码或密码</summary>
     public String Code { get; set; }
 }
+
+/// <summary>开始绑定 TOTP 请求</summary>
+public class MfaTotpStartModel
+{
+    /// <summary>强制绑定 setupToken；已登录时可空</summary>
+    public String MfaToken { get; set; }
+
+    /// <summary>重绑时确认方式</summary>
+    public String ConfirmMethod { get; set; }
+
+    /// <summary>重绑时确认码</summary>
+    public String ConfirmCode { get; set; }
+}
+
+/// <summary>确认绑定 TOTP 请求</summary>
+public class MfaTotpConfirmModel
+{
+    /// <summary>Authenticator 6 位码</summary>
+    public String Code { get; set; }
+
+    /// <summary>强制绑定 setupToken；已登录时可空</summary>
+    public String MfaToken { get; set; }
+}
+
+/// <summary>确认绑定 TOTP 结果</summary>
+public class MfaTotpConfirmResult
+{
+    /// <summary>一次性明文恢复码</summary>
+    public String[] BackupCodes { get; set; }
+
+    /// <summary>强制绑定完成后的访问令牌（已登录绑定场景可空）</summary>
+    public String AccessToken { get; set; }
+
+    /// <summary>刷新令牌</summary>
+    public String RefreshToken { get; set; }
+
+    /// <summary>过期秒数</summary>
+    public Int32 ExpireIn { get; set; }
+}

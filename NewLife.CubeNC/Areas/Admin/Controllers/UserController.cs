@@ -761,6 +761,24 @@ public class UserController : EntityController<User, UserModel>
         }
     }
 
+    /// <summary>解绑 TOTP</summary>
+    [EntityAuthorize]
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public ActionResult MfaTotpUnbind(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ManageProvider.User as XCode.Membership.User;
+            _mfaService.UnbindTotp(user, model.Method, model.Code, HttpContext.GetUserHost());
+            return Json(0, "已解绑");
+        }
+        catch (Exception ex)
+        {
+            return Json(500, ex.Message);
+        }
+    }
+
     private XCode.Membership.User ResolveMfaUser(String mfaToken)
     {
         mfaToken = MfaSession.ReadChallengeToken(HttpContext, mfaToken);

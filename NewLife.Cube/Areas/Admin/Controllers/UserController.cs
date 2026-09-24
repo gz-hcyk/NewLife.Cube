@@ -318,6 +318,159 @@ public class UserController : EntityController<User, UserModel>
         }
     }
 
+    /// <summary>当前用户 MFA 状态（安全设置）</summary>
+    [HttpGet]
+    [EntityAuthorize]
+    public ApiResponse<MfaStatusModel> Mfa()
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            return _mfaService.GetStatus(user).ToOkApiResponse();
+        }
+        catch (Exception ex)
+        {
+            return new MfaStatusModel().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>开始绑定 TOTP。支持已登录或强制绑定 setupToken</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public ApiResponse<TotpSetupModel> MfaTotpStart(MfaTotpStartModel model)
+    {
+        try
+        {
+            var user = ResolveMfaUser(model?.MfaToken);
+            var setup = _mfaService.StartTotpSetup(user, model?.ConfirmMethod, model?.ConfirmCode);
+            return setup.ToOkApiResponse();
+        }
+        catch (Exception ex)
+        {
+            return new TotpSetupModel().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>确认绑定 TOTP。setupToken 场景下同时完成登录并返回 Token</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public ApiResponse<MfaTotpConfirmResult> MfaTotpConfirm(MfaTotpConfirmModel model)
+    {
+        try
+        {
+            var mfaToken = model?.MfaToken;
+            var user = ResolveMfaUser(mfaToken);
+            var backups = _mfaService.ConfirmTotpSetup(user, model?.Code, HttpContext.GetUserHost());
+            var result = new MfaTotpConfirmResult { BackupCodes = backups };
+
+            if (!mfaToken.IsNullOrEmpty())
+            {
+                var state = _mfaService.GetChallenge(mfaToken);
+                if (state?.IsSetup == true)
+                {
+                    var login = _userService.CompleteSetupLogin(mfaToken, HttpContext);
+                    result.AccessToken = login.Data?.AccessToken;
+                    result.RefreshToken = login.Data?.RefreshToken;
+                    result.ExpireIn = login.Data?.ExpireIn ?? 0;
+                }
+            }
+
+            return result.ToOkApiResponse("绑定成功");
+        }
+        catch (Exception ex)
+        {
+            return new MfaTotpConfirmResult().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>启停短信/邮件 MFA 通道（须二次确认）</summary>
+    [HttpPost]
+    [EntityAuthorize]
+    public ApiResponse<String[]> MfaChannel(MfaChannelModel model)
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            var codes = _mfaService.SetChannel(user, model?.Channel, model?.Enable ?? false, model?.Method, model?.Code, HttpContext.GetUserHost());
+            return (codes ?? []).ToOkApiResponse();
+        }
+        catch (Exception ex)
+        {
+            return Array.Empty<String>().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>关闭 MFA（须二次确认）</summary>
+    [HttpPost]
+    [EntityAuthorize]
+    public ApiResponse<String> MfaDisable(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            _mfaService.Disable(user, model?.Method, model?.Code, HttpContext.GetUserHost());
+            return "".ToOkApiResponse("已关闭");
+        }
+        catch (Exception ex)
+        {
+            return "".ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>重新生成恢复码（须二次确认；明文仅返回一次）</summary>
+    [HttpPost]
+    [EntityAuthorize]
+    public ApiResponse<String[]> MfaBackupCodes(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            var codes = _mfaService.RegenerateBackupCodes(user, model?.Method, model?.Code, HttpContext.GetUserHost());
+            return codes.ToOkApiResponse();
+        }
+        catch (Exception ex)
+        {
+            return Array.Empty<String>().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>解绑 TOTP（须二次确认）</summary>
+    [HttpPost]
+    [EntityAuthorize]
+    public ApiResponse<String> MfaTotpUnbind(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            _mfaService.UnbindTotp(user, model?.Method, model?.Code, HttpContext.GetUserHost());
+            return "".ToOkApiResponse("已解绑");
+        }
+        catch (Exception ex)
+        {
+            return "".ToFailApiResponse(ex.Message);
+        }
+    }
+
+    private User ResolveLoggedInUser()
+    {
+        // AllowAnonymous 动作不会走 EntityAuthorize，需主动从 Token 恢复登录态
+        ManageProvider.Provider.TryLogin(HttpContext);
+        var current = ManageProvider.User as User;
+        if (current == null || current.ID <= 0) throw new InvalidOperationException("用户未登录");
+        return current;
+    }
+
+    /// <summary>解析 MFA 操作用户：setupToken 或已登录会话</summary>
+    private User ResolveMfaUser(String mfaToken)
+    {
+        if (!mfaToken.IsNullOrEmpty())
+        {
+            var (user, _) = _mfaService.ResolveTokenUser(mfaToken, requireSetup: true);
+            return user;
+        }
+        return ResolveLoggedInUser();
+    }
+
     /// <summary>刷新令牌</summary>
     /// <returns></returns>
     [HttpPost]

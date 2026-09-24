@@ -33,6 +33,10 @@
                 <td>
                     @(Model.TotpConfirmed ? "已绑定" : "未绑定")
                     <button type="button" class="btn btn-sm btn-primary" id="btn-totp-start">@(Model.TotpConfirmed ? "重新绑定" : "绑定")</button>
+                    @if (Model.TotpConfirmed)
+                    {
+                        <button type="button" class="btn btn-sm btn-danger" id="btn-totp-unbind">解绑</button>
+                    }
                 </td>
             </tr>
             <tr>
@@ -161,6 +165,15 @@
       alert('绑定成功');
       location.reload();
     }).fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
+  });
+  $('#btn-totp-unbind').on('click', function () {
+    var method = prompt('确认方式：totp / password / backup', 'totp');
+    if (method === null) return;
+    var code = prompt('请输入验证码或密码以解绑 TOTP');
+    if (!code) return;
+    post('@Url.Action("MfaTotpUnbind")', { Method: method || 'totp', Code: code })
+      .done(function () { location.reload(); })
+      .fail(function (xhr) { alert((xhr.responseJSON && (xhr.responseJSON.msg || xhr.responseJSON.message)) || '失败'); });
   });
   $('.btn-channel').on('click', function () {
     var $b = $(this);
