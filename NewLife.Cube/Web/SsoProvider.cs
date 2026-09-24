@@ -1,4 +1,8 @@
-﻿using NewLife.Cube.Entity;
+﻿using System.Web;
+using Microsoft.AspNetCore.Http;
+using NewLife.Cube.Entity;
+using NewLife.Cube.Security;
+using NewLife.Cube.Services;
 using NewLife.Log;
 using NewLife.Model;
 using NewLife.Reflection;
@@ -176,25 +180,45 @@ public class SsoProvider
         // 填充昵称等数据
         Fill(client, user);
 
+        // 用户角色可能有更新，需要清空扩展属性，避免Roles保留脏数据，导致用户首次访问显示无权限
+        (user as IEntity).Extends.Clear();
+
+        if (!user.Enable) throw new InvalidOperationException($"用户[{user}]已禁用！");
+
+        var set = CubeSetting.Current;
+
+        // 绑定已有会话：须当前会话已满足 MFA，防止弱会话借 Bind 固化入口
+        if (forceBind && set.EnableMfa)
+        {
+            var current = prv.Current as User;
+            if (current != null)
+            {
+                var curMfa = UserMfa.FindByUserId(current.ID);
+                if (curMfa != null && curMfa.IsActive && !MfaSession.IsSatisfied(httpContext, current.ID))
+                    throw new InvalidOperationException("请先完成二步验证后再绑定第三方账号");
+            }
+        }
+
+        // 绑定已有会话账号时不再二次挑战；SSO 新登录须过 MFA（与密码登录同一策略）
+        if (!forceBind && user is User ssoUser)
+        {
+            var mfaUrl = TryPrepareMfaRedirect(context, ssoUser, client.Name);
+            if (!mfaUrl.IsNullOrEmpty()) return mfaUrl;
+        }
+
+        // MFA 已通过或不需要：再更新登录计数/在线状态（避免挑战页前污染审计）
         if (user is IAuthUser user3)
         {
             user3.Logins++;
             user3.LastLogin = DateTime.Now;
             user3.LastLoginIP = ip;
-            //user3.Save();
-            //(user3 as IEntity).Update();
         }
         if (user is IUser user4) user4.Online = true;
         if (user is IEntity entity) entity.Update();
 
-        // 用户角色可能有更新，需要清空扩展属性，避免Roles保留脏数据，导致用户首次访问显示无权限
-        (user as IEntity).Extends.Clear();
-
         // 写日志
         var log = LogProvider.Provider;
         log?.WriteLog(typeof(User), "SSO登录", true, $"[{user}]从[{client.Name}]的[{client.UserName ?? client.NickName}]登录", user.ID, user + "");
-
-        if (!user.Enable) throw new InvalidOperationException($"用户[{user}]已禁用！");
 
         // 登录成功，保存当前用户
         if (prv is ManageProvider2 prv2) user = prv2.CheckAgent(user);
@@ -202,14 +226,46 @@ public class SsoProvider
 
         // 单点登录不要保存Cookie，让它在Session过期时请求认证中心
         //prv.SaveCookie(user);
-        var set = CubeSetting.Current;
         if (set.SessionTimeout > 0)
         {
             var expire = TimeSpan.FromSeconds(set.SessionTimeout);
             prv.SaveCookie(user, expire, httpContext);
+            if (set.EnableMfa)
+                MfaSession.WriteSatisfied(httpContext, user.ID, expire);
         }
 
         return SuccessUrl;
+    }
+
+    /// <summary>SSO 登录插入 MFA 门闸。需要挑战/绑定时返回跳转地址，否则返回 null</summary>
+    protected virtual String TryPrepareMfaRedirect(IServiceProvider context, User user, String clientName)
+    {
+        var mfaService = ModelExtension.GetService<MfaService>(context);
+        if (mfaService == null) return null;
+
+        var (needChallenge, needBind, _) = mfaService.EvaluateAfterLogin(user);
+        if (!needChallenge && !needBind) return null;
+
+        // 确保不会带着未过 MFA 的会话离开
+        var prv = Provider ?? ManageProvider.Provider;
+        if (prv.Current?.ID == user.ID) prv.Logout();
+
+        LogProvider.Provider?.WriteLog(typeof(User), "SSO登录", true,
+            $"[{user}]从[{clientName}]认证成功，等待二步验证 needBind={needBind}", user.ID, user + "");
+
+        var httpContext = ModelExtension.GetService<IHttpContextAccessor>(context)?.HttpContext;
+        var expire = CubeSetting.Current.MfaTokenExpire > 0 ? CubeSetting.Current.MfaTokenExpire : 300;
+
+        if (needBind)
+        {
+            var setup = mfaService.CreateSetupSession(user, false);
+            MfaSession.WriteChallengeToken(httpContext, setup.MfaToken, expire);
+            return "/Admin/User/MfaSetup";
+        }
+
+        var challenge = mfaService.CreateChallenge(user, false);
+        MfaSession.WriteChallengeToken(httpContext, challenge.MfaToken, expire);
+        return "/Admin/User/MfaChallenge";
     }
 
     /// <summary>填充用户，登录成功并获取用户信息之后</summary>

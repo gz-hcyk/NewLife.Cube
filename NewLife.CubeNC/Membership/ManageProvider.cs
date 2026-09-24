@@ -1,4 +1,5 @@
 ﻿using NewLife.Cube.Entity;
+using NewLife.Cube.Security;
 using NewLife.Cube.Services;
 using NewLife.Cube.Web;
 using NewLife.Log;
@@ -234,6 +235,8 @@ public class ManageProvider2 : ManageProvider
 
         // 销毁Cookie
         this.SaveCookie(null, TimeSpan.Zero, context);
+        MfaSession.ClearSatisfied(context);
+        MfaSession.ClearChallengeToken(context);
 
         base.Logout();
     }

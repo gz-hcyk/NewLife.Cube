@@ -31,6 +31,7 @@ public class UserController : EntityController<User, UserModel>
     private readonly ICache _cache;
     private readonly UserService _userService;
     private readonly PasswordService _passwordService;
+    private readonly MfaService _mfaService;
     private readonly ISmsVerifyCode _smsVerifyCode;
 
     static UserController()
@@ -103,10 +104,11 @@ public class UserController : EntityController<User, UserModel>
     /// <param name="passwordService"></param>
     /// <param name="cacheProvider"></param>
     /// <param name="smsVerifyCode"></param>
-    public UserController(UserService userService, PasswordService passwordService, ICacheProvider cacheProvider, ISmsVerifyCode smsVerifyCode = null)
+    public UserController(UserService userService, PasswordService passwordService, MfaService mfaService, ICacheProvider cacheProvider, ISmsVerifyCode smsVerifyCode = null)
     {
         _userService = userService;
         _passwordService = passwordService;
+        _mfaService = mfaService;
         _cache = cacheProvider.Cache;
         _smsVerifyCode = smsVerifyCode;
     }
@@ -249,40 +251,224 @@ public class UserController : EntityController<User, UserModel>
     /// <returns></returns>
     [HttpPost]
     [AllowAnonymous]
-    public ApiResponse<TokenModel> Login(LoginModel model)
+    public IApiResponse Login(LoginModel model)
     {
-
-        var res = new TokenModel();
         if (String.IsNullOrWhiteSpace(model.Username))
-            return res.ToFailApiResponse("用户名不能为空");
+            return new TokenModel().ToFailApiResponse("用户名不能为空");
         if (String.IsNullOrWhiteSpace(model.Password))
-            return res.ToFailApiResponse("密码不能为空");
+            return new TokenModel().ToFailApiResponse("密码不能为空");
 
         try
         {
             ServiceResult<TokenModel> loginResult = _userService.Login(model, HttpContext);
+            if (loginResult != null && loginResult.Code == (Int32)CubeCode.MfaRequired)
+            {
+                var challenge = loginResult.Extra as MfaChallengeModel ?? new MfaChallengeModel();
+                return challenge.ToFailApiResponse(CubeCode.MfaRequired, loginResult.Message);
+            }
+            if (loginResult != null && loginResult.Code == (Int32)CubeCode.MfaBindRequired)
+            {
+                var setup = loginResult.Extra as MfaChallengeModel ?? new MfaChallengeModel();
+                return setup.ToFailApiResponse(CubeCode.MfaBindRequired, loginResult.Message);
+            }
+
+            var res = new TokenModel();
             if (loginResult?.Data == null || loginResult.Data.AccessToken.IsNullOrEmpty())
-                return res.ToFailApiResponse(loginResult?.Message); //登录失败
+                return res.ToFailApiResponse(loginResult?.Message);
 
             res.AccessToken = loginResult.Data.AccessToken;
             res.RefreshToken = loginResult.Data.RefreshToken;
             return res.ToOkApiResponse("登录成功");
-
         }
         catch (Exception ex)
         {
-            return res.ToFailApiResponse(ex.Message);
+            return new TokenModel().ToFailApiResponse(ex.Message);
         }
+    }
 
-        //TODO 地址跳转，应该直接操作Response，而不是返回一个视图。API暂时不需要跳转，由前端处理
-        var returnUrl = GetRequest("r");
-        if (returnUrl.IsNullOrEmpty()) returnUrl = GetRequest("ReturnUrl");
-        var viewModel = GetViewModel(returnUrl);
-        //viewModel.LoginTip = loginResult?.Result;
-        //viewModel.OAuthItems = OAuthConfig.GetVisibles(TenantContext.CurrentId);
-        //return Json(0, null, viewModel);
-        return res.ToFailApiResponse("");
-        ////Response.Redirect(returnUrl,true); 
+    /// <summary>校验 MFA 完成登录</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public ApiResponse<TokenModel> VerifyMfa(VerifyMfaModel model)
+    {
+        try
+        {
+            var result = _userService.VerifyMfa(model, HttpContext);
+            return (result.Data ?? new TokenModel()).ToOkApiResponse("登录成功");
+        }
+        catch (Exception ex)
+        {
+            return new TokenModel().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>发送 MFA 通道验证码</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public async Task<ApiResponse<String>> SendMfaCode(SendMfaCodeModel model)
+    {
+        try
+        {
+            await _mfaService.SendChallengeCode(model, HttpContext.GetUserHost());
+            return "".ToOkApiResponse("验证码已发送");
+        }
+        catch (Exception ex)
+        {
+            return "".ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>当前用户 MFA 状态（安全设置）</summary>
+    [HttpGet]
+    [EntityAuthorize]
+    public ApiResponse<MfaStatusModel> Mfa()
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            return _mfaService.GetStatus(user).ToOkApiResponse();
+        }
+        catch (Exception ex)
+        {
+            return new MfaStatusModel().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>开始绑定 TOTP。支持已登录或强制绑定 setupToken</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public ApiResponse<TotpSetupModel> MfaTotpStart(MfaTotpStartModel model)
+    {
+        try
+        {
+            var user = ResolveMfaUser(model?.MfaToken);
+            var setup = _mfaService.StartTotpSetup(user, model?.ConfirmMethod, model?.ConfirmCode);
+            return setup.ToOkApiResponse();
+        }
+        catch (Exception ex)
+        {
+            return new TotpSetupModel().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>确认绑定 TOTP。setupToken 场景下同时完成登录并返回 Token</summary>
+    [HttpPost]
+    [AllowAnonymous]
+    public ApiResponse<MfaTotpConfirmResult> MfaTotpConfirm(MfaTotpConfirmModel model)
+    {
+        try
+        {
+            var mfaToken = model?.MfaToken;
+            var user = ResolveMfaUser(mfaToken);
+            var backups = _mfaService.ConfirmTotpSetup(user, model?.Code, HttpContext.GetUserHost());
+            var result = new MfaTotpConfirmResult { BackupCodes = backups };
+
+            if (!mfaToken.IsNullOrEmpty())
+            {
+                var state = _mfaService.GetChallenge(mfaToken);
+                if (state?.IsSetup == true)
+                {
+                    var login = _userService.CompleteSetupLogin(mfaToken, HttpContext);
+                    result.AccessToken = login.Data?.AccessToken;
+                    result.RefreshToken = login.Data?.RefreshToken;
+                    result.ExpireIn = login.Data?.ExpireIn ?? 0;
+                }
+            }
+
+            return result.ToOkApiResponse("绑定成功");
+        }
+        catch (Exception ex)
+        {
+            return new MfaTotpConfirmResult().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>启停短信/邮件 MFA 通道（须二次确认）</summary>
+    [HttpPost]
+    [EntityAuthorize]
+    public ApiResponse<String[]> MfaChannel(MfaChannelModel model)
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            var codes = _mfaService.SetChannel(user, model?.Channel, model?.Enable ?? false, model?.Method, model?.Code, HttpContext.GetUserHost());
+            return (codes ?? []).ToOkApiResponse();
+        }
+        catch (Exception ex)
+        {
+            return Array.Empty<String>().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>关闭 MFA（须二次确认）</summary>
+    [HttpPost]
+    [EntityAuthorize]
+    public ApiResponse<String> MfaDisable(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            _mfaService.Disable(user, model?.Method, model?.Code, HttpContext.GetUserHost());
+            return "".ToOkApiResponse("已关闭");
+        }
+        catch (Exception ex)
+        {
+            return "".ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>重新生成恢复码（须二次确认；明文仅返回一次）</summary>
+    [HttpPost]
+    [EntityAuthorize]
+    public ApiResponse<String[]> MfaBackupCodes(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            var codes = _mfaService.RegenerateBackupCodes(user, model?.Method, model?.Code, HttpContext.GetUserHost());
+            return codes.ToOkApiResponse();
+        }
+        catch (Exception ex)
+        {
+            return Array.Empty<String>().ToFailApiResponse(ex.Message);
+        }
+    }
+
+    /// <summary>解绑 TOTP（须二次确认）</summary>
+    [HttpPost]
+    [EntityAuthorize]
+    public ApiResponse<String> MfaTotpUnbind(MfaConfirmModel model)
+    {
+        try
+        {
+            var user = ResolveLoggedInUser();
+            _mfaService.UnbindTotp(user, model?.Method, model?.Code, HttpContext.GetUserHost());
+            return "".ToOkApiResponse("已解绑");
+        }
+        catch (Exception ex)
+        {
+            return "".ToFailApiResponse(ex.Message);
+        }
+    }
+
+    private User ResolveLoggedInUser()
+    {
+        // AllowAnonymous 动作不会走 EntityAuthorize，需主动从 Token 恢复登录态
+        ManageProvider.Provider.TryLogin(HttpContext);
+        var current = ManageProvider.User as User;
+        if (current == null || current.ID <= 0) throw new InvalidOperationException("用户未登录");
+        return current;
+    }
+
+    /// <summary>解析 MFA 操作用户：setupToken 或已登录会话</summary>
+    private User ResolveMfaUser(String mfaToken)
+    {
+        if (!mfaToken.IsNullOrEmpty())
+        {
+            var (user, _) = _mfaService.ResolveTokenUser(mfaToken, requireSetup: true);
+            return user;
+        }
+        return ResolveLoggedInUser();
     }
 
     /// <summary>刷新令牌</summary>
@@ -318,7 +504,8 @@ public class UserController : EntityController<User, UserModel>
             {
                 UserService.ClearOnline(ManageProvider.User as User);
 
-                return Redirect($"~/Sso/Logout?name={name}&r={HttpUtility.UrlEncode(returnUrl)}");
+                var safeR = (!returnUrl.IsNullOrEmpty() && Url.IsLocalUrl(returnUrl)) ? returnUrl : null;
+                return Redirect($"~/Sso/Logout?name={name}&r={HttpUtility.UrlEncode(safeR)}");
             }
             //if (!name.IsNullOrEmpty()) return RedirectToAction("Logout", "Sso", new
             //{

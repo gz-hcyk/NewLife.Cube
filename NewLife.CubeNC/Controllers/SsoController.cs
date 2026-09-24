@@ -1,4 +1,5 @@
 ﻿using System.Security.Cryptography;
+using System.Web;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
@@ -228,6 +229,21 @@ public class SsoController : ControllerBaseX
 
             log.ConnectId = uc.ID;
             log.UserId = uc.UserID;
+
+            // SSO 已认证但需 MFA：跳转挑战/绑定页（尚未建立会话，不记在线/不发 front-end token）
+            if (!url.IsNullOrEmpty() &&
+                (url.Contains("/Admin/User/MfaChallenge", StringComparison.OrdinalIgnoreCase) ||
+                 url.Contains("/Admin/User/MfaSetup", StringComparison.OrdinalIgnoreCase)))
+            {
+                log.Success = true;
+                log.Remark = (log.Remark + " 待二步验证").Trim();
+                log.Update();
+
+                if (!returnUrl.IsNullOrEmpty())
+                    url = url + (url.Contains('?') ? "&" : "?") + "r=" + HttpUtility.UrlEncode(returnUrl);
+                return Redirect(url);
+            }
+
             log.Success = true;
             log.Update();
 
@@ -240,6 +256,7 @@ public class SsoController : ControllerBaseX
                 olt.OAuthProvider = client.Name;
                 olt.SaveAsync();
             }
+            var set2 = CubeSetting.Current;
             var stat = UserStat.GetOrAdd(DateTime.Today);
             if (stat != null)
             {
@@ -270,7 +287,7 @@ public class SsoController : ControllerBaseX
             var user = ManageProvider.Provider.Current;
             if (log.Source == "front-end")
             {
-                var token = HttpContext.IssueToken(user, TimeSpan.FromSeconds(set.TokenExpire));
+                var token = HttpContext.IssueToken(user, TimeSpan.FromSeconds(set2.TokenExpire));
                 url += $"#token={token}";
             }
 

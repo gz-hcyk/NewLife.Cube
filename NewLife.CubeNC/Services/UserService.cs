@@ -1,10 +1,12 @@
-﻿using System.Text;
+﻿using System.Collections.Generic;
+using System.Text;
 using NewLife.Caching;
 using NewLife.Cube.Areas.Admin.Models;
 using NewLife.Cube.Common;
 using NewLife.Cube.Entity;
 using NewLife.Cube.Enums;
 using NewLife.Cube.Models;
+using NewLife.Cube.Security;
 using NewLife.Cube.Web;
 using NewLife.Log;
 using NewLife.Model;
@@ -23,7 +25,7 @@ namespace NewLife.Cube.Services;
 /// <param name="passwordService">密码服务</param>
 /// <param name="cacheProvider">缓存提供者</param>
 /// <param name="tracer">追踪器</param>
-public class UserService(SmsService smsService, MailService mailService, PasswordService passwordService, ICacheProvider cacheProvider, ITracer tracer)
+public class UserService(SmsService smsService, MailService mailService, PasswordService passwordService, MfaService mfaService, ICacheProvider cacheProvider, ITracer tracer)
 {
     #region 缓存Key前缀常量
     /// <summary>密码登录用户名错误次数缓存前缀</summary>
@@ -165,8 +167,33 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             var rsaKey = pdic?.Item2;
             password = rsaKey.IsNullOrEmpty() ? password : Decrypt(rsaKey, password);
 
+            // 优先 LoginCore：校验密码但不写 Cookie，避免 MFA 前会话窗口
             var provider = ManageProvider.Provider;
-            if (provider.Login(username, password, remember) == null)
+            User user;
+            var oauths = OAuthConfig.GetValids(TenantContext.CurrentId, GrantTypes.Password);
+            if (oauths != null && oauths.Count > 0)
+            {
+                if (provider.Login(username, password, remember) == null)
+                    return new ServiceResult<TokenModel> { IsSuccess = false, Message = "提供的用户名或密码不正确。" };
+                user = provider.Current as User;
+            }
+            else if (provider is ManageProvider mp)
+            {
+                var authed = mp.LoginCore(username, password);
+                if (authed == null)
+                    return new ServiceResult<TokenModel> { IsSuccess = false, Message = "提供的用户名或密码不正确。" };
+                user = authed as User;
+                if (provider is ManageProvider2 mp2)
+                    user = mp2.CheckAgent(user) as User;
+            }
+            else
+            {
+                if (provider.Login(username, password, remember) == null)
+                    return new ServiceResult<TokenModel> { IsSuccess = false, Message = "提供的用户名或密码不正确。" };
+                user = provider.Current as User;
+            }
+
+            if (user == null)
                 return new ServiceResult<TokenModel> { IsSuccess = false, Message = "提供的用户名或密码不正确。" };
 
             // 登录成功，清空错误数
@@ -176,13 +203,79 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             // 移除秘钥私钥信息，避免重放
             if (!loginModel.Pkey.IsNullOrEmpty()) _cache.Remove(loginModel.Pkey);
 
-            return CompleteLogin(provider.Current, httpContext, remember, "密码登录", username, ip);
+            return FinishLoginOrMfa(user, httpContext, remember, "密码登录", username, ip);
         }
         catch (Exception ex)
         {
             HandleLoginError(ex, "登录", username, ip, key, ipKey, errors, ipErrors, set.LoginForbiddenTime);
             throw;
         }
+    }
+
+    /// <summary>第一因子通过后：按统一策略插入 MFA 门闸，或完成登录</summary>
+    private ServiceResult<TokenModel> FinishLoginOrMfa(User user, HttpContext httpContext, Boolean remember, String action, String username, String ip)
+    {
+        var provider = ManageProvider.Provider;
+        var (needChallenge, needBind, _) = mfaService.EvaluateAfterLogin(user);
+        if (needBind)
+        {
+            // 清除可能已写入的会话；签发仅用于绑定的 setupToken
+            if (provider.Current?.ID == user.ID) provider.Logout();
+            var setup = mfaService.CreateSetupSession(user, remember);
+            return new ServiceResult<TokenModel>
+            {
+                IsSuccess = false,
+                Code = (Int32)CubeCode.MfaBindRequired,
+                Message = "须先绑定二步验证",
+                Extra = setup,
+            };
+        }
+        if (needChallenge)
+        {
+            if (provider.Current?.ID == user.ID) provider.Logout();
+            var challenge = mfaService.CreateChallenge(user, remember);
+            return new ServiceResult<TokenModel>
+            {
+                IsSuccess = false,
+                Code = (Int32)CubeCode.MfaRequired,
+                Message = "需要二步验证",
+                Extra = challenge,
+            };
+        }
+
+        return CompleteLogin(user, httpContext, remember, action, username, ip);
+    }
+
+    /// <summary>完成 MFA 挑战并登录</summary>
+    public ServiceResult<TokenModel> VerifyMfa(VerifyMfaModel model, HttpContext httpContext)
+    {
+        var ip = httpContext.GetUserHost();
+        try
+        {
+            var (user, remember) = mfaService.VerifyChallenge(model, ip);
+            // 建立会话主体
+            ManageProvider.Provider.Current = user;
+            return CompleteLogin(user, httpContext, remember, "MFA登录", user.Name, ip);
+        }
+        catch (Exception ex)
+        {
+        LogProvider.Provider.WriteLog(typeof(User), "MFA登录", false, ex.Message, 0, null, ip);
+            throw;
+        }
+    }
+
+    /// <summary>强制绑定完成后，用 setupToken 完成登录</summary>
+    public ServiceResult<TokenModel> CompleteSetupLogin(String mfaToken, HttpContext httpContext)
+    {
+        var (user, state) = mfaService.ResolveTokenUser(mfaToken, requireSetup: true);
+        var mfa = UserMfa.FindByUserId(user.ID);
+        if (mfa == null || !mfa.IsActive)
+            throw new InvalidOperationException("请先完成二步验证绑定");
+
+        mfaService.ConsumeChallenge(mfaToken);
+        ManageProvider.Provider.Current = user;
+        var ip = httpContext.GetUserHost();
+        return CompleteLogin(user, httpContext, state.Remember, "MFA绑定后登录", user.Name, ip);
     }
 
     /// <summary>手机验证码登录</summary>
@@ -254,7 +347,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
 
             if (!user.Enable) throw new InvalidOperationException("用户已禁用");
 
-            // 验证通过，执行登录
+            // 验证通过：置当前用户后走与密码/SSO 相同的 MFA 门闸（验证码登录 ≠ 已完成第二因子）
             var provider = ManageProvider.Provider;
             provider.Current = user;
 
@@ -262,7 +355,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             if (errors > 0) _cache.Remove(key);
             if (ipErrors > 0) _cache.Remove(ipKey);
 
-            return CompleteLogin(user, httpContext, remember, "短信登录", mobile, ip);
+            return FinishLoginOrMfa(user, httpContext, remember, "短信登录", mobile, ip);
         }
         catch (Exception ex)
         {
@@ -340,7 +433,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
 
             if (!user.Enable) throw new InvalidOperationException("用户已禁用");
 
-            // 验证通过，执行登录
+            // 验证通过：置当前用户后走与密码/SSO 相同的 MFA 门闸
             var provider = ManageProvider.Provider;
             provider.Current = user;
 
@@ -348,7 +441,7 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
             if (errors > 0) _cache.Remove(key);
             if (ipErrors > 0) _cache.Remove(ipKey);
 
-            return CompleteLogin(user, httpContext, remember, "邮箱登录", mail, ip);
+            return FinishLoginOrMfa(user, httpContext, remember, "邮箱登录", mail, ip);
         }
         catch (Exception ex)
         {
@@ -362,12 +455,26 @@ public class UserService(SmsService smsService, MailService mailService, Passwor
     {
         var set = CubeSetting.Current;
 
+        // 缓解会话固定：清空服务端 Session 字典后再写入新登录态
+        if (httpContext.Items["Session"] is IDictionary<String, Object> sessionBag)
+            sessionBag.Clear();
+
         // 保存Cookie
         var provider = ManageProvider.Provider;
         var expire = remember ? TimeSpan.FromDays(365) : TimeSpan.FromMinutes(0);
         if (set.SessionTimeout > 0 && !remember)
             expire = TimeSpan.FromSeconds(set.SessionTimeout);
+
+        provider.Current = user;
         provider.SaveCookie(user, expire, httpContext);
+
+        // 本登录已满足 MFA 策略：写入会话戳，开启 MFA 后存量未过第二因子的会话将被踢出
+        if (set.EnableMfa)
+        {
+            var stampExpire = expire > TimeSpan.Zero ? expire : TimeSpan.FromSeconds(set.SessionTimeout > 0 ? set.SessionTimeout : 7200);
+            MfaSession.WriteSatisfied(httpContext, user.ID, stampExpire);
+        }
+        MfaSession.ClearChallengeToken(httpContext);
 
         // 记录在线统计
         var stat = UserStat.GetOrAdd(DateTime.Today);

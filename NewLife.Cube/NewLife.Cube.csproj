@@ -101,10 +101,14 @@
     <Compile Include="..\NewLife.CubeNC\Services\IMailVerifyCode.cs" Link="Services\IMailVerifyCode.cs" />
     <Compile Include="..\NewLife.CubeNC\Services\ISmsVerifyCode.cs" Link="Services\ISmsVerifyCode.cs" />
     <Compile Include="..\NewLife.CubeNC\Services\JobService.cs" Link="Services\JobService.cs" />
+    <Compile Include="..\NewLife.CubeNC\Services\MfaService.cs" Link="Services\MfaService.cs" />
     <Compile Include="..\NewLife.CubeNC\Services\PasswordService.cs" Link="Services\PasswordService.cs" />
     <Compile Include="..\NewLife.CubeNC\Services\SmtpMailVerifyCode.cs" Link="Services\SmtpMailVerifyCode.cs" />
     <Compile Include="..\NewLife.CubeNC\Services\TokenService.cs" Link="Services\TokenService.cs" />
     <Compile Include="..\NewLife.CubeNC\Services\UserService.cs" Link="Services\UserService.cs" />
+    <Compile Include="..\NewLife.CubeNC\Models\MfaModels.cs" Link="Models\MfaModels.cs" />
+    <Compile Include="..\NewLife.CubeNC\Security\Totp.cs" Link="Security\Totp.cs" />
+    <Compile Include="..\NewLife.CubeNC\Security\MfaSession.cs" Link="Security\MfaSession.cs" />
     <Compile Include="..\NewLife.CubeNC\Session\SessionProvider.cs" Link="Session\SessionProvider.cs" />
     <Compile Include="..\NewLife.CubeNC\ViewModels\DataField.cs" Link="ViewModels\DataField.cs" />
     <Compile Include="..\NewLife.CubeNC\ViewModels\ErrorModel.cs" Link="ViewModels\ErrorModel.cs" />

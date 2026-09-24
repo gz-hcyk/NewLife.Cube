@@ -90,6 +90,7 @@
     <Compile Include="..\NewLife.Cube\Entity\Models\UserOnlineModel.cs" Link="Entity\Models\UserOnlineModel.cs" />
     <Compile Include="..\NewLife.Cube\Entity\Models\UserStatModel.cs" Link="Entity\Models\UserStatModel.cs" />
     <Compile Include="..\NewLife.Cube\Entity\Models\UserTokenModel.cs" Link="Entity\Models\UserTokenModel.cs" />
+    <Compile Include="..\NewLife.Cube\Entity\Models\UserMfaModel.cs" Link="Entity\Models\UserMfaModel.cs" />
     <Compile Include="..\NewLife.Cube\Entity\Models\VerifyCodeRecordModel.cs" Link="Entity\Models\VerifyCodeRecordModel.cs" />
     <Compile Include="..\NewLife.Cube\Entity\OAuth日志.Biz.cs" Link="Entity\OAuth日志.Biz.cs" />
     <Compile Include="..\NewLife.Cube\Entity\OAuth日志.cs" Link="Entity\OAuth日志.cs" />
@@ -107,6 +108,8 @@
     <Compile Include="..\NewLife.Cube\Entity\应用系统.cs" Link="Entity\应用系统.cs" />
     <Compile Include="..\NewLife.Cube\Entity\用户令牌.Biz.cs" Link="Entity\用户令牌.Biz.cs" />
     <Compile Include="..\NewLife.Cube\Entity\用户令牌.cs" Link="Entity\用户令牌.cs" />
+    <Compile Include="..\NewLife.Cube\Entity\用户MFA.Biz.cs" Link="Entity\用户MFA.Biz.cs" />
+    <Compile Include="..\NewLife.Cube\Entity\用户MFA.cs" Link="Entity\用户MFA.cs" />
     <Compile Include="..\NewLife.Cube\Entity\用户在线.Biz.cs" Link="Entity\用户在线.Biz.cs" />
     <Compile Include="..\NewLife.Cube\Entity\用户在线.cs" Link="Entity\用户在线.cs" />
     <Compile Include="..\NewLife.Cube\Entity\用户统计.Biz.cs" Link="Entity\用户统计.Biz.cs" />
@@ -134,6 +137,7 @@
     <Compile Include="..\NewLife.Cube\Extensions\PagerHelper.cs" Link="Extensions\PagerHelper.cs" />
     <Compile Include="..\NewLife.Cube\Extensions\WebHelper.cs" Link="Extensions\WebHelper.cs" />
     <Compile Include="..\NewLife.Cube\Models\ImportContext.cs" Link="Models\ImportContext.cs" />
+    <Compile Include="..\NewLife.Cube\Models\CubeCode.cs" Link="Models\CubeCode.cs" />
     <Compile Include="..\NewLife.Cube\Models\ServiceResult.cs" Link="Models\ServiceResult.cs" />
     <Compile Include="..\NewLife.Cube\Models\TokenInModel.cs" Link="Models\TokenInModel.cs" />
     <Compile Include="..\NewLife.Cube\Models\VerifyCodeModel.cs" Link="Models\VerifyCodeModel.cs" />

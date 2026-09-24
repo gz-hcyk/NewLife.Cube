@@ -7,7 +7,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Net.Http.Headers;
 using NewLife.Common;
+using NewLife.Cube.Entity;
 using NewLife.Cube.Extensions;
+using NewLife.Cube.Security;
 using NewLife.Log;
 using NewLife.Model;
 using NewLife.Serialization;
@@ -83,6 +85,20 @@ public static class ManagerProviderHelper
 
             // 如果Null直接返回
             if (user == null) return null;
+
+            // 开启 MFA 后：已绑定第二因子但本会话无「已满足」戳 → 作废存量会话
+            if (CubeSetting.Current.EnableMfa && user is User mfaUser)
+            {
+                var mfa = UserMfa.FindByUserId(mfaUser.ID);
+                if (mfa != null && mfa.IsActive && !MfaSession.IsSatisfied(context, mfaUser.ID))
+                {
+                    span ??= DefaultTracer.Instance?.NewSpan(nameof(TryLogin) + ".MfaStamp");
+                    span?.AppendTag("reject stale session without MFA stamp");
+                    provider.Logout();
+                    MfaSession.ClearSatisfied(context);
+                    return null;
+                }
+            }
 
             // 设置前端当前用户
             provider.SetPrincipal(serviceProvider);
